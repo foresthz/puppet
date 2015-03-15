@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/ssl/host'
@@ -22,12 +22,10 @@ describe Puppet::SSL::Host do
 
   after {
     Puppet::SSL::Host.ca_location = :none
-
-    Puppet.settings.clear
   }
 
   it "should be considered a CA host if its name is equal to 'ca'" do
-    Puppet::SSL::Host.new(Puppet::SSL::CA_NAME).should be_ca
+    expect(Puppet::SSL::Host.new(Puppet::SSL::CA_NAME)).to be_ca
   end
 
   describe "when managing its key" do
@@ -38,12 +36,12 @@ describe Puppet::SSL::Host do
     it "should save the key such that the Indirector can find it" do
       @host.generate_key
 
-      Puppet::SSL::Key.indirection.find(@host.name).content.to_s.should == @host.key.to_s
+      expect(Puppet::SSL::Key.indirection.find(@host.name).content.to_s).to eq(@host.key.to_s)
     end
 
     it "should save the private key into the :privatekeydir" do
       @host.generate_key
-      File.read(File.join(Puppet.settings[:privatekeydir], "luke.madstop.com.pem")).should == @host.key.to_s
+      expect(File.read(File.join(Puppet.settings[:privatekeydir], "luke.madstop.com.pem"))).to eq(@host.key.to_s)
     end
   end
 
@@ -55,12 +53,12 @@ describe Puppet::SSL::Host do
     it "should save the certificate request such that the Indirector can find it" do
       @host.generate_certificate_request
 
-      Puppet::SSL::CertificateRequest.indirection.find(@host.name).content.to_s.should == @host.certificate_request.to_s
+      expect(Puppet::SSL::CertificateRequest.indirection.find(@host.name).content.to_s).to eq(@host.certificate_request.to_s)
     end
 
     it "should save the private certificate request into the :privatekeydir" do
       @host.generate_certificate_request
-      File.read(File.join(Puppet.settings[:requestdir], "luke.madstop.com.pem")).should == @host.certificate_request.to_s
+      expect(File.read(File.join(Puppet.settings[:requestdir], "luke.madstop.com.pem"))).to eq(@host.certificate_request.to_s)
     end
   end
 
@@ -70,7 +68,7 @@ describe Puppet::SSL::Host do
       @ca = Puppet::SSL::Host.new(Puppet::SSL::Host.ca_name)
       @ca.generate_key
 
-      FileTest.should_not be_exist(File.join(Puppet[:privatekeydir], "ca.pem"))
+      expect(Puppet::FileSystem.exist?(File.join(Puppet[:privatekeydir], "ca.pem"))).to be_falsey
     end
   end
 
@@ -79,6 +77,6 @@ describe Puppet::SSL::Host do
     @ca = Puppet::SSL::CertificateAuthority.new
     @ca.sign(@host.name)
 
-    @host.ssl_store.verify(@host.certificate.content).should be_true
+    expect(@host.ssl_store.verify(@host.certificate.content)).to be_truthy
   end
 end

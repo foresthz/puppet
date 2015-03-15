@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/ssl/certificate_revocation_list'
@@ -20,8 +20,6 @@ describe Puppet::SSL::CertificateRevocationList do
   after {
     Puppet::SSL::Host.ca_location = :none
 
-    Puppet.settings.clear
-
     # This is necessary so the terminus instances don't lie around.
     Puppet::SSL::Host.indirection.termini.clear
   }
@@ -29,7 +27,7 @@ describe Puppet::SSL::CertificateRevocationList do
   it "should be able to read in written out CRLs with no revoked certificates" do
     ca = Puppet::SSL::CertificateAuthority.new
 
-    raise "CRL not created" unless FileTest.exist?(Puppet[:hostcrl])
+    raise "CRL not created" unless Puppet::FileSystem.exist?(Puppet[:hostcrl])
 
     crl = Puppet::SSL::CertificateRevocationList.new("crl_int_testing")
     crl.read(Puppet[:hostcrl])

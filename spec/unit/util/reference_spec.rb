@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 require 'puppet/util/reference'
 
@@ -21,7 +21,7 @@ describe Puppet::Util::Reference do
       my_fragment = markdown_definitionlist(my_term, my_definition)
     end
     Puppet::Util::Reference.reference(:testreference).send(:to_markdown, true)
-    my_fragment.should == <<-EOT
+    expect(my_fragment).to eq <<-EOT
 A term
 : The definition of this term, marked by a colon and a space.
   We should be able to handle multi-line definitions. Each subsequent

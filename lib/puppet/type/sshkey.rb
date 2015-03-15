@@ -1,5 +1,5 @@
 module Puppet
-  newtype(:sshkey) do
+  Type.newtype(:sshkey) do
     @doc = "Installs and manages ssh host keys.  At this point, this type
       only knows how to install keys into `/etc/ssh/ssh_known_hosts`.  See
       the `ssh_authorized_key` type to manage authorized keys."
@@ -9,14 +9,15 @@ module Puppet
     newproperty(:type) do
       desc "The encryption type used.  Probably ssh-dss or ssh-rsa."
 
-      newvalues :'ssh-dss', :'ssh-rsa', :'ecdsa-sha2-nistp256', :'ecdsa-sha2-nistp384', :'ecdsa-sha2-nistp521'
+      newvalues :'ssh-dss', :'ssh-ed25519', :'ssh-rsa', :'ecdsa-sha2-nistp256', :'ecdsa-sha2-nistp384', :'ecdsa-sha2-nistp521'
 
       aliasvalue(:dsa, :'ssh-dss')
+      aliasvalue(:ed25519, :'ssh-ed25519')
       aliasvalue(:rsa, :'ssh-rsa')
     end
 
     newproperty(:key) do
-      desc "The key itself; generally a long string of hex digits."
+      desc "The key itself; generally a long string of uuencoded characters."
     end
 
     # FIXME This should automagically check for aliases to the hosts, just

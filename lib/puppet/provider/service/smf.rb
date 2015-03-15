@@ -12,9 +12,9 @@ Puppet::Type.type(:service).provide :smf, :parent => :base do
 
   EOT
 
-  defaultfor :operatingsystem => :solaris
+  defaultfor :osfamily => :solaris
 
-  confine :operatingsystem => :solaris
+  confine :osfamily => :solaris
 
   commands :adm => "/usr/sbin/svcadm", :svcs => "/usr/bin/svcs"
   commands :svccfg => "/usr/sbin/svccfg"
@@ -28,7 +28,19 @@ Puppet::Type.type(:service).provide :smf, :parent => :base do
         end
       end
   rescue Puppet::ExecutionFailure => detail
-      raise Puppet::Error.new( "Cannot config #{self.name} to enable it: #{detail}" )
+      raise Puppet::Error.new( "Cannot config #{self.name} to enable it: #{detail}", detail )
+  end
+
+  def self.instances
+   svcs.split("\n").select{|l| l !~ /^legacy_run/ }.collect do |line|
+     state,stime,fmri = line.split(/\s+/)
+     status =  case state
+               when /online/; :running
+               when /maintenance/; :maintenance
+               else :stopped
+               end
+     new({:name => fmri, :ensure => status})
+   end
   end
 
   def enable

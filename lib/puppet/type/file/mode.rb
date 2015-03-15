@@ -1,27 +1,40 @@
 # Manage file modes.  This state should support different formats
 # for specification (e.g., u+rwx, or -0011), but for now only supports
 # specifying the full mode.
+
+
 module Puppet
   Puppet::Type.type(:file).newproperty(:mode) do
     require 'puppet/util/symbolic_file_mode'
     include Puppet::Util::SymbolicFileMode
 
-    desc <<-EOT
+    desc <<-'EOT'
       The desired permissions mode for the file, in symbolic or numeric
-      notation. Puppet uses traditional Unix permission schemes and translates
-      them to equivalent permissions for systems which represent permissions
-      differently, including Windows.
+      notation. This value **must** be specified as a string; do not use
+      un-quoted numbers to represent file modes.
 
-      Numeric modes should use the standard four-digit octal notation of
-      `<setuid/setgid/sticky><owner><group><other>` (e.g. 0644). Each of the
-      "owner," "group," and "other" digits should be a sum of the
-      permissions for that class of users, where read = 4, write = 2, and
-      execute/search = 1. When setting numeric permissions for
-      directories, Puppet sets the search permission wherever the read
-      permission is set.
+      The `file` type uses traditional Unix permission schemes and translates
+      them to equivalent permissions for systems which represent permissions
+      differently, including Windows. For detailed ACL controls on Windows,
+      you can leave `mode` unmanaged and use
+      [the puppetlabs/acl module.](https://forge.puppetlabs.com/puppetlabs/acl)
+
+      Numeric modes should use the standard octal notation of
+      `<SETUID/SETGID/STICKY><OWNER><GROUP><OTHER>` (e.g. '0644').
+
+      * Each of the "owner," "group," and "other" digits should be a sum of the
+        permissions for that class of users, where read = 4, write = 2, and
+        execute/search = 1.
+      * The setuid/setgid/sticky digit is also a sum, where setuid = 4, setgid = 2,
+        and sticky = 1.
+      * The setuid/setgid/sticky digit is optional. If it is absent, Puppet will
+        clear any existing setuid/setgid/sticky permissions. (So to make your intent
+        clear, you should use at least four digits for numeric modes.)
+      * When specifying numeric permissions for directories, Puppet sets the search
+        permission wherever the read permission is set.
 
       Symbolic modes should be represented as a string of comma-separated
-      permission clauses, in the form `<who><op><perm>`:
+      permission clauses, in the form `<WHO><OP><PERM>`:
 
       * "Who" should be u (user), g (group), o (other), and/or a (all)
       * "Op" should be = (set exact permissions), + (add select permissions),
@@ -37,8 +50,12 @@ module Puppet
           * g (group's current permissions)
           * o (other's current permissions)
 
-      Thus, mode `0664` could be represented symbolically as either `a=r,ug+w` or
-      `ug=rw,o=r`. See the manual page for GNU or BSD `chmod` for more details
+      Thus, mode `0664` could be represented symbolically as either `a=r,ug+w`
+      or `ug=rw,o=r`.  However, symbolic modes are more expressive than numeric
+      modes: a mode only affects the specified bits, so `mode => 'ug+w'` will
+      set the user and group write bits, without affecting any other bits.
+
+      See the manual page for GNU or BSD `chmod` for more details
       on numeric and symbolic modes.
 
       On Windows, permissions are translated as follows:
@@ -54,6 +71,9 @@ module Puppet
     EOT
 
     validate do |value|
+      if !value.is_a?(String)
+        raise Puppet::Error, "The file mode specification must be a string, not '#{value.class.name}'"
+      end
       unless value.nil? or valid_symbolic_mode?(value)
         raise Puppet::Error, "The file mode specification is invalid: #{value.inspect}"
       end
@@ -71,14 +91,13 @@ module Puppet
 
     def desired_mode_from_current(desired, current)
       current = current.to_i(8) if current.is_a? String
-      is_a_directory = @resource.stat and @resource.stat.directory?
+      is_a_directory = @resource.stat && @resource.stat.directory?
       symbolic_mode_to_int(desired, current, is_a_directory)
     end
 
     # If we're a directory, we need to be executable for all cases
     # that are readable.  This should probably be selectable, but eh.
     def dirmask(value)
-      orig = value
       if FileTest.directory?(resource[:path]) and value =~ /^\d+$/ then
         value = value.to_i(8)
         value |= 0100 if value & 0400 != 0
@@ -142,7 +161,13 @@ module Puppet
     end
 
     def is_to_s(currentvalue)
-      currentvalue.rjust(4, "0")
+      if currentvalue == :absent
+        # This can occur during audits---if a file is transitioning from
+        # present to absent the mode will have a value of `:absent`.
+        super
+      else
+        currentvalue.rjust(4, "0")
+      end
     end
   end
 end

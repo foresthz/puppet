@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 require 'puppet/network/http'
 require 'webrick'
@@ -6,65 +6,57 @@ require 'puppet/network/http/webrick/rest'
 
 describe Puppet::Network::HTTP::WEBrickREST do
   it "should include the Puppet::Network::HTTP::Handler module" do
-    Puppet::Network::HTTP::WEBrickREST.ancestors.should be_include(Puppet::Network::HTTP::Handler)
-  end
-
-  describe "when initializing" do
-    it "should call the Handler's initialization hook with its provided arguments as the server and handler" do
-      server = WEBrick::HTTPServer.new(:BindAddress => '127.0.0.1',
-                                       # Probablistically going to succeed
-                                       # even if we run more than one test
-                                       # instance at once.
-                                       :Port        => 40000 + rand(10000),
-                                       # Just discard any log output, thanks.
-                                       :Logger      => stub_everything('logger'))
-
-      Puppet::Network::HTTP::WEBrickREST.any_instance.
-        expects(:initialize_for_puppet).with(:server => server, :handler => "arguments")
-
-      Puppet::Network::HTTP::WEBrickREST.new(server, "arguments")
-    end
+    expect(Puppet::Network::HTTP::WEBrickREST.ancestors).to be_include(Puppet::Network::HTTP::Handler)
   end
 
   describe "when receiving a request" do
     before do
-      @request     = stub('webrick http request', :query => {}, :peeraddr => %w{eh boo host ip}, :client_cert => nil)
-      @response    = stub('webrick http response', :status= => true, :body= => true)
+      @request     = stub('webrick http request', :query => {},
+                          :query_string => 'environment=production',
+                          :peeraddr => %w{eh boo host ip},
+                          :request_method => 'GET',
+                          :client_cert => nil)
+      @response    = mock('webrick http response')
       @model_class = stub('indirected model class')
       @webrick     = stub('webrick http server', :mount => true, :[] => {})
       Puppet::Indirector::Indirection.stubs(:model).with(:foo).returns(@model_class)
-      @handler = Puppet::Network::HTTP::WEBrickREST.new(@webrick, :foo)
+      @handler = Puppet::Network::HTTP::WEBrickREST.new(@webrick)
     end
 
     it "should delegate its :service method to its :process method" do
       @handler.expects(:process).with(@request, @response).returns "stuff"
-      @handler.service(@request, @response).should == "stuff"
+      expect(@handler.service(@request, @response)).to eq("stuff")
+    end
+
+    describe "#headers" do
+      let(:fake_request) { {"Foo" => "bar", "BAZ" => "bam" } }
+
+      it "should iterate over the request object using #each" do
+        fake_request.expects(:each)
+        @handler.headers(fake_request)
+      end
+
+      it "should return a hash with downcased header names" do
+        result = @handler.headers(fake_request)
+        expect(result).to eq(fake_request.inject({}) { |m,(k,v)| m[k.downcase] = v; m })
+      end
     end
 
     describe "when using the Handler interface" do
-      it "should use the 'accept' request parameter as the Accept header" do
-        @request.expects(:[]).with("accept").returns "foobar"
-        @handler.accept_header(@request).should == "foobar"
-      end
-
-      it "should use the 'content-type' request header as the Content-Type header" do
-        @request.expects(:[]).with("content-type").returns "foobar"
-        @handler.content_type_header(@request).should == "foobar"
-      end
-
       it "should use the request method as the http method" do
         @request.expects(:request_method).returns "FOO"
-        @handler.http_method(@request).should == "FOO"
+        expect(@handler.http_method(@request)).to eq("FOO")
       end
 
       it "should return the request path as the path" do
         @request.expects(:path).returns "/foo/bar"
-        @handler.path(@request).should == "/foo/bar"
+        expect(@handler.path(@request)).to eq("/foo/bar")
       end
 
       it "should return the request body as the body" do
+        @request.stubs(:request_method).returns "POST"
         @request.expects(:body).returns "my body"
-        @handler.body(@request).should == "my body"
+        expect(@handler.body(@request)).to eq("my body")
       end
 
       it "should set the response's 'content-type' header when setting the content type" do
@@ -79,103 +71,144 @@ describe Puppet::Network::HTTP::WEBrickREST do
         @handler.set_response(@response, "mybody", 200)
       end
 
-      describe "when the result is a File" do
-        before(:each) do
-          stat = stub 'stat', :size => 100
-          @file = stub 'file', :stat => stat, :path => "/tmp/path"
-          @file.stubs(:is_a?).with(File).returns(true)
-        end
+      it "serves a file" do
+        stat = stub 'stat', :size => 100
+        @file = stub 'file', :stat => stat, :path => "/tmp/path"
+        @file.stubs(:is_a?).with(File).returns(true)
 
-        it "should serve it" do
-          @response.stubs(:[]=)
+        @response.expects(:[]=).with('content-length', 100)
+        @response.expects(:status=).with 200
+        @response.expects(:body=).with @file
 
-          @response.expects(:status=).with 200
-          @response.expects(:body=).with @file
-
-          @handler.set_response(@response, @file, 200)
-        end
-
-        it "should set the Content-Length header" do
-          @response.expects(:[]=).with('content-length', 100)
-
-          @handler.set_response(@response, @file, 200)
-        end
+        @handler.set_response(@response, @file, 200)
       end
 
       it "should set the status and message on the response when setting the response for a failed query" do
         @response.expects(:status=).with 400
-        @response.expects(:reason_phrase=).with "mybody"
+        @response.expects(:body=).with "mybody"
 
         @handler.set_response(@response, "mybody", 400)
       end
     end
 
     describe "and determining the request parameters" do
-      it "should include the HTTP request parameters, with the keys as symbols" do
-        @request.stubs(:query).returns("foo" => "baz", "bar" => "xyzzy")
-        result = @handler.params(@request)
-        result[:foo].should == "baz"
-        result[:bar].should == "xyzzy"
+      def query_of(options)
+        request = Puppet::Indirector::Request.new(:myind, :find, "my key", nil, options)
+        WEBrick::HTTPUtils.parse_query(request.query_string.sub(/^\?/, ''))
       end
 
-      it "should CGI-decode the HTTP parameters" do
-        encoding = CGI.escape("foo bar")
-        @request.expects(:query).returns('foo' => encoding)
+      def a_request_querying(query_data)
+        @request.expects(:query).returns(query_of(query_data))
+        @request
+      end
+
+      def certificate_with_subject(subj)
+        cert = OpenSSL::X509::Certificate.new
+        cert.subject = OpenSSL::X509::Name.parse(subj)
+        cert
+      end
+
+      it "has no parameters when there is no query string" do
+        only_server_side_information = [:authenticated, :ip, :node]
+        @request.stubs(:query).returns(nil)
+
         result = @handler.params(@request)
-        result[:foo].should == "foo bar"
+
+        expect(result.keys.sort).to eq(only_server_side_information)
+      end
+
+      it "should prefer duplicate params from the body over the query string" do
+        @request.stubs(:request_method).returns "PUT"
+        @request.stubs(:query).returns(WEBrick::HTTPUtils.parse_query("foo=bar&environment=posted_env"))
+        expect(@handler.params(@request)[:environment]).to eq("posted_env")
+      end
+
+      it "should include the HTTP request parameters, with the keys as symbols" do
+        request = a_request_querying("foo" => "baz", "bar" => "xyzzy")
+        result = @handler.params(request)
+
+        expect(result[:foo]).to eq("baz")
+        expect(result[:bar]).to eq("xyzzy")
+      end
+
+      it "should handle parameters with no value" do
+        request = a_request_querying('foo' => "")
+
+        result = @handler.params(request)
+
+        expect(result[:foo]).to eq("")
       end
 
       it "should convert the string 'true' to the boolean" do
-        @request.expects(:query).returns('foo' => "true")
-        result = @handler.params(@request)
-        result[:foo].should be_true
+        request = a_request_querying('foo' => "true")
+
+        result = @handler.params(request)
+
+        expect(result[:foo]).to eq(true)
       end
 
       it "should convert the string 'false' to the boolean" do
-        @request.expects(:query).returns('foo' => "false")
-        result = @handler.params(@request)
-        result[:foo].should be_false
+        request = a_request_querying('foo' => "false")
+
+        result = @handler.params(request)
+
+        expect(result[:foo]).to eq(false)
       end
 
-      it "should YAML-load and CGI-decode values that are YAML-encoded" do
-        escaping = CGI.escape(YAML.dump(%w{one two}))
-        @request.expects(:query).returns('foo' => escaping)
-        result = @handler.params(@request)
-        result[:foo].should == %w{one two}
+      it "should reconstruct arrays" do
+        request = a_request_querying('foo' => ["a", "b", "c"])
+
+        result = @handler.params(request)
+
+        expect(result[:foo]).to eq(["a", "b", "c"])
+      end
+
+      it "should convert values inside arrays into primitive types" do
+        request = a_request_querying('foo' => ["true", "false", "1", "1.2"])
+
+        result = @handler.params(request)
+
+        expect(result[:foo]).to eq([true, false, 1, 1.2])
+      end
+
+      it "should treat YAML-load values that are YAML-encoded as any other String" do
+        request = a_request_querying('foo' => YAML.dump(%w{one two}))
+        expect(@handler.params(request)[:foo]).to eq("---\n- one\n- two\n")
       end
 
       it "should not allow clients to set the node via the request parameters" do
-        @request.stubs(:query).returns("node" => "foo")
+        request = a_request_querying("node" => "foo")
         @handler.stubs(:resolve_node)
 
-        @handler.params(@request)[:node].should be_nil
+        expect(@handler.params(request)[:node]).to be_nil
       end
 
       it "should not allow clients to set the IP via the request parameters" do
-        @request.stubs(:query).returns("ip" => "foo")
-        @handler.params(@request)[:ip].should_not == "foo"
+        request = a_request_querying("ip" => "foo")
+
+        expect(@handler.params(request)[:ip]).not_to eq("foo")
       end
 
       it "should pass the client's ip address to model find" do
         @request.stubs(:peeraddr).returns(%w{noidea dunno hostname ipaddress})
-        @handler.params(@request)[:ip].should == "ipaddress"
+        expect(@handler.params(@request)[:ip]).to eq("ipaddress")
       end
 
       it "should set 'authenticated' to true if a certificate is present" do
         cert = stub 'cert', :subject => [%w{CN host.domain.com}]
         @request.stubs(:client_cert).returns cert
-        @handler.params(@request)[:authenticated].should be_true
+        expect(@handler.params(@request)[:authenticated]).to be_truthy
       end
 
       it "should set 'authenticated' to false if no certificate is present" do
         @request.stubs(:client_cert).returns nil
-        @handler.params(@request)[:authenticated].should be_false
+        expect(@handler.params(@request)[:authenticated]).to be_falsey
       end
 
       it "should pass the client's certificate name to model method if a certificate is present" do
-        cert = stub 'cert', :subject => [%w{CN host.domain.com}]
-        @request.stubs(:client_cert).returns cert
-        @handler.params(@request)[:node].should == "host.domain.com"
+        @request.stubs(:client_cert).returns(certificate_with_subject("/CN=host.domain.com"))
+
+        expect(@handler.params(@request)[:node]).to eq("host.domain.com")
       end
 
       it "should resolve the node name with an ip address look-up if no certificate is present" do
@@ -183,7 +216,15 @@ describe Puppet::Network::HTTP::WEBrickREST do
 
         @handler.expects(:resolve_node).returns(:resolved_node)
 
-        @handler.params(@request)[:node].should == :resolved_node
+        expect(@handler.params(@request)[:node]).to eq(:resolved_node)
+      end
+
+      it "should resolve the node name with an ip address look-up if CN parsing fails" do
+        @request.stubs(:client_cert).returns(certificate_with_subject("/C=company"))
+
+        @handler.expects(:resolve_node).returns(:resolved_node)
+
+        expect(@handler.params(@request)[:node]).to eq(:resolved_node)
       end
     end
   end

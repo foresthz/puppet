@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/ssl/certificate_request'
@@ -9,8 +9,6 @@ describe Puppet::SSL::CertificateRequest do
   before do
     # Get a safe temporary file
     dir = tmpdir("csr_integration_testing")
-
-    Puppet.settings.clear
 
     Puppet.settings[:confdir] = dir
     Puppet.settings[:vardir] = dir
@@ -26,10 +24,6 @@ describe Puppet::SSL::CertificateRequest do
     Puppet::SSL::CertificateRequest.indirection.termini.clear
   end
 
-  after do
-    Puppet.settings.clear
-  end
-
   it "should be able to generate CSRs" do
     @csr.generate(@key)
   end
@@ -42,13 +36,13 @@ describe Puppet::SSL::CertificateRequest do
     @csr.generate(@key)
     Puppet::SSL::CertificateRequest.indirection.save(@csr)
 
-    Puppet::SSL::CertificateRequest.indirection.find("luke.madstop.com").should be_instance_of(Puppet::SSL::CertificateRequest)
+    expect(Puppet::SSL::CertificateRequest.indirection.find("luke.madstop.com")).to be_instance_of(Puppet::SSL::CertificateRequest)
   end
 
   it "should save the completely CSR when saving" do
     @csr.generate(@key)
     Puppet::SSL::CertificateRequest.indirection.save(@csr)
 
-    Puppet::SSL::CertificateRequest.indirection.find("luke.madstop.com").content.to_s.should == @csr.content.to_s
+    expect(Puppet::SSL::CertificateRequest.indirection.find("luke.madstop.com").content.to_s).to eq(@csr.content.to_s)
   end
 end

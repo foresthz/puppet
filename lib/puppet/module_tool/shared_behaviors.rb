@@ -36,7 +36,7 @@ module Puppet::ModuleTool::Shared
       mod_name, releases = pair
       mod_name = mod_name.gsub('/', '-')
       releases.each do |rel|
-        semver = SemVer.new(rel['version'] || '0.0.0') rescue SemVer.MIN
+        semver = SemVer.new(rel['version'] || '0.0.0') rescue SemVer::MIN
         @versions[mod_name] << { :vstring => rel['version'], :semver => semver }
         @versions[mod_name].sort! { |a, b| a[:semver] <=> b[:semver] }
         @urls["#{mod_name}@#{rel['version']}"] = rel['file']
@@ -75,7 +75,7 @@ module Puppet::ModuleTool::Shared
         :queued     => true
       }
 
-      if @force
+      if forced?
         range = SemVer[@version] rescue SemVer['>= 0.0.0']
       else
         range = (@conditions[mod]).map do |r|
@@ -96,7 +96,7 @@ module Puppet::ModuleTool::Shared
           :conditions        => @conditions
       end
 
-      if !(@force || @installed[mod].empty? || source.last[:name] == :you)
+      if !(forced? || @installed[mod].empty? || source.last[:name] == :you)
         next if range === SemVer.new(@installed[mod].first.version)
         action = :upgrade
       elsif @installed[mod].empty?
@@ -107,7 +107,9 @@ module Puppet::ModuleTool::Shared
         @conditions.each { |_, conds| conds.delete_if { |c| c[:module] == mod } }
       end
 
-      valid_versions = @versions["#{mod}"].select { |h| range === h[:semver] }
+      versions = @versions["#{mod}"].select { |h| range === h[:semver] }
+      valid_versions = versions.select { |x| x[:semver].special == '' }
+      valid_versions = versions if valid_versions.empty?
 
       unless version = valid_versions.last
         req_module   = @module_name
@@ -149,7 +151,7 @@ module Puppet::ModuleTool::Shared
           cache_path = forge.retrieve(release[:file])
         end
       rescue OpenURI::HTTPError => e
-        raise RuntimeError, "Could not download module: #{e.message}"
+        raise RuntimeError, "Could not download module: #{e.message}", e.backtrace
       end
 
       [
@@ -157,5 +159,22 @@ module Puppet::ModuleTool::Shared
         *download_tarballs(release[:dependencies], default_path, forge)
       ]
     end.flatten
+  end
+
+  def forced?
+    options[:force]
+  end
+
+  def add_module_name_constraints_to_graph(graph)
+    # Puppet modules are installed by "module name", but resolved by
+    # "full name" (including namespace).  So that we don't run into
+    # problems at install time, we should reject any solution that
+    # depends on multiple nodes with the same "module name".
+    graph.add_graph_constraint('PMT') do |nodes|
+      names = nodes.map { |x| x.dependency_names + [ x.name ] }.flatten
+      names = names.map { |x| x.tr('/', '-') }.uniq
+      names = names.map { |x| x[/-(.*)/, 1] }
+      names.length == names.uniq.length
+    end
   end
 end

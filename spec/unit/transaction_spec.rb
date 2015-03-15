@@ -1,299 +1,178 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
+require 'matchers/include_in_order'
+require 'puppet_spec/compiler'
 
 require 'puppet/transaction'
 require 'fileutils'
 
-def without_warnings
-  flag = $VERBOSE
-  $VERBOSE = nil
-  yield
-  $VERBOSE = flag
-end
-
 describe Puppet::Transaction do
   include PuppetSpec::Files
+  include PuppetSpec::Compiler
+
+  def catalog_with_resource(resource)
+    catalog = Puppet::Resource::Catalog.new
+    catalog.add_resource(resource)
+    catalog
+  end
+
+  def transaction_with_resource(resource)
+    transaction = Puppet::Transaction.new(catalog_with_resource(resource), nil, Puppet::Graph::RandomPrioritizer.new)
+    transaction
+  end
 
   before do
     @basepath = make_absolute("/what/ever")
-    @transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new)
-  end
-
-  it "should delegate its event list to the event manager" do
-    @transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new)
-    @transaction.event_manager.expects(:events).returns %w{my events}
-    @transaction.events.should == %w{my events}
-  end
-
-  it "should delegate adding times to its report" do
-    @transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new)
-    @transaction.report.expects(:add_times).with(:foo, 10)
-    @transaction.report.expects(:add_times).with(:bar, 20)
-
-    @transaction.add_times :foo => 10, :bar => 20
-  end
-
-  it "should be able to accept resource status instances" do
-    resource = Puppet::Type.type(:notify).new :title => "foobar"
-    status = Puppet::Resource::Status.new(resource)
-    @transaction.add_resource_status(status)
-    @transaction.resource_status(resource).should equal(status)
+    @transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new, nil, Puppet::Graph::RandomPrioritizer.new)
   end
 
   it "should be able to look resource status up by resource reference" do
     resource = Puppet::Type.type(:notify).new :title => "foobar"
-    status = Puppet::Resource::Status.new(resource)
-    @transaction.add_resource_status(status)
-    @transaction.resource_status(resource.to_s).should equal(status)
+    transaction = transaction_with_resource(resource)
+    transaction.evaluate
+
+    expect(transaction.resource_status(resource.to_s)).to be_changed
   end
 
   # This will basically only ever be used during testing.
   it "should automatically create resource statuses if asked for a non-existent status" do
     resource = Puppet::Type.type(:notify).new :title => "foobar"
-    @transaction.resource_status(resource).should be_instance_of(Puppet::Resource::Status)
+    transaction = transaction_with_resource(resource)
+    expect(transaction.resource_status(resource)).to be_instance_of(Puppet::Resource::Status)
   end
 
   it "should add provided resource statuses to its report" do
     resource = Puppet::Type.type(:notify).new :title => "foobar"
-    status = Puppet::Resource::Status.new(resource)
-    @transaction.add_resource_status(status)
-    @transaction.report.resource_statuses[resource.to_s].should equal(status)
-  end
+    transaction = transaction_with_resource(resource)
+    transaction.evaluate
 
-  it "should consider a resource to be failed if a status instance exists for that resource and indicates it is failed" do
-    resource = Puppet::Type.type(:notify).new :name => "yayness"
-    status = Puppet::Resource::Status.new(resource)
-    status.failed = "some message"
-    @transaction.add_resource_status(status)
-    @transaction.should be_failed(resource)
-  end
-
-  it "should not consider a resource to be failed if a status instance exists for that resource but indicates it is not failed" do
-    resource = Puppet::Type.type(:notify).new :name => "yayness"
-    status = Puppet::Resource::Status.new(resource)
-    @transaction.add_resource_status(status)
-    @transaction.should_not be_failed(resource)
-  end
-
-  it "should consider there to be failed resources if any statuses are marked failed" do
-    resource = Puppet::Type.type(:notify).new :name => "yayness"
-    status = Puppet::Resource::Status.new(resource)
-    status.failed = "some message"
-    @transaction.add_resource_status(status)
-    @transaction.should be_any_failed
+    status = transaction.resource_status(resource)
+    expect(transaction.report.resource_statuses[resource.to_s]).to equal(status)
   end
 
   it "should not consider there to be failed resources if no statuses are marked failed" do
-    resource = Puppet::Type.type(:notify).new :name => "yayness"
-    status = Puppet::Resource::Status.new(resource)
-    @transaction.add_resource_status(status)
-    @transaction.should_not be_any_failed
+    resource = Puppet::Type.type(:notify).new :title => "foobar"
+    transaction = transaction_with_resource(resource)
+    transaction.evaluate
+
+    expect(transaction).not_to be_any_failed
   end
 
   it "should use the provided report object" do
     report = Puppet::Transaction::Report.new("apply")
-    @transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new, report)
+    transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new, report, nil)
 
-    @transaction.report.should == report
+    expect(transaction.report).to eq(report)
   end
 
   it "should create a report if none is provided" do
-    @transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new)
+    transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new, nil, nil)
 
-    @transaction.report.should be_kind_of Puppet::Transaction::Report
+    expect(transaction.report).to be_kind_of Puppet::Transaction::Report
   end
 
   describe "when initializing" do
     it "should create an event manager" do
-      @transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new)
-      @transaction.event_manager.should be_instance_of(Puppet::Transaction::EventManager)
-      @transaction.event_manager.transaction.should equal(@transaction)
+      transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new, nil, nil)
+      expect(transaction.event_manager).to be_instance_of(Puppet::Transaction::EventManager)
+      expect(transaction.event_manager.transaction).to equal(transaction)
     end
 
     it "should create a resource harness" do
-      @transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new)
-      @transaction.resource_harness.should be_instance_of(Puppet::Transaction::ResourceHarness)
-      @transaction.resource_harness.transaction.should equal(@transaction)
+      transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new, nil, nil)
+      expect(transaction.resource_harness).to be_instance_of(Puppet::Transaction::ResourceHarness)
+      expect(transaction.resource_harness.transaction).to equal(transaction)
+    end
+
+    it "should set retrieval time on the report" do
+      catalog = Puppet::Resource::Catalog.new
+      report = Puppet::Transaction::Report.new("apply")
+      catalog.retrieval_duration = 5
+
+      report.expects(:add_times).with(:config_retrieval, 5)
+
+      transaction = Puppet::Transaction.new(catalog, report, nil)
     end
   end
 
   describe "when evaluating a resource" do
-    before do
-      @transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new)
-      @transaction.stubs(:skip?).returns false
-
-      @resource = Puppet::Type.type(:file).new :path => @basepath
-    end
-
-    it "should check whether the resource should be skipped" do
-      @transaction.expects(:skip?).with(@resource).returns false
-
-      @transaction.eval_resource(@resource)
-    end
+    let(:resource) { Puppet::Type.type(:file).new :path => @basepath }
 
     it "should process events" do
-      @transaction.event_manager.expects(:process_events).with(@resource)
+      transaction = transaction_with_resource(resource)
 
-      @transaction.eval_resource(@resource)
+      transaction.expects(:skip?).with(resource).returns false
+      transaction.event_manager.expects(:process_events).with(resource)
+
+      transaction.evaluate
     end
 
     describe "and the resource should be skipped" do
-      before do
-        @transaction.expects(:skip?).with(@resource).returns true
+      it "should mark the resource's status as skipped" do
+        transaction = transaction_with_resource(resource)
+
+        transaction.expects(:skip?).with(resource).returns true
+
+        transaction.evaluate
+        expect(transaction.resource_status(resource)).to be_skipped
       end
 
-      it "should mark the resource's status as skipped" do
-        @transaction.eval_resource(@resource)
-        @transaction.resource_status(@resource).should be_skipped
+      it "does not process any scheduled events" do
+        transaction = transaction_with_resource(resource)
+        transaction.expects(:skip?).with(resource).returns true
+        transaction.event_manager.expects(:process_events).with(resource).never
+        transaction.evaluate
+      end
+
+      it "dequeues all events scheduled on that resource" do
+        transaction = transaction_with_resource(resource)
+        transaction.expects(:skip?).with(resource).returns true
+        transaction.event_manager.expects(:dequeue_all_events_for_resource).with(resource)
+        transaction.evaluate
       end
     end
   end
 
   describe "when applying a resource" do
     before do
+      @catalog = Puppet::Resource::Catalog.new
       @resource = Puppet::Type.type(:file).new :path => @basepath
+      @catalog.add_resource(@resource)
       @status = Puppet::Resource::Status.new(@resource)
 
-      @transaction = Puppet::Transaction.new(Puppet::Resource::Catalog.new)
+      @transaction = Puppet::Transaction.new(@catalog, nil, Puppet::Graph::RandomPrioritizer.new)
       @transaction.event_manager.stubs(:queue_events)
-      @transaction.resource_harness.stubs(:evaluate).returns(@status)
     end
 
     it "should use its resource harness to apply the resource" do
       @transaction.resource_harness.expects(:evaluate).with(@resource)
-      @transaction.apply(@resource)
+      @transaction.evaluate
     end
 
     it "should add the resulting resource status to its status list" do
-      @transaction.apply(@resource)
-      @transaction.resource_status(@resource).should be_instance_of(Puppet::Resource::Status)
+      @transaction.resource_harness.stubs(:evaluate).returns(@status)
+      @transaction.evaluate
+      expect(@transaction.resource_status(@resource)).to be_instance_of(Puppet::Resource::Status)
     end
 
     it "should queue any events added to the resource status" do
+      @transaction.resource_harness.stubs(:evaluate).returns(@status)
       @status.expects(:events).returns %w{a b}
       @transaction.event_manager.expects(:queue_events).with(@resource, ["a", "b"])
-      @transaction.apply(@resource)
+      @transaction.evaluate
     end
 
     it "should log and skip any resources that cannot be applied" do
-      @transaction.resource_harness.expects(:evaluate).raises ArgumentError
-      @resource.expects(:err)
-      @transaction.apply(@resource)
-      @transaction.report.resource_statuses[@resource.to_s].should be_nil
-    end
-  end
-
-  describe "#eval_generate" do
-    let(:path) { tmpdir('eval_generate') }
-    let(:resource) { Puppet::Type.type(:file).new(:path => path, :recurse => true) }
-    let(:graph) { @transaction.relationship_graph }
-
-    def find_vertex(type, title)
-      graph.vertices.find {|v| v.type == type and v.title == title}
+      @resource.expects(:properties).raises ArgumentError
+      @transaction.evaluate
+      expect(@transaction.report.resource_statuses[@resource.to_s]).to be_failed
     end
 
-    before :each do
-      @filenames = []
+    it "should report any_failed if any resources failed" do
+      @resource.expects(:properties).raises ArgumentError
+      @transaction.evaluate
 
-      'a'.upto('c') do |x|
-        @filenames << File.join(path,x)
-
-        'a'.upto('c') do |y|
-          @filenames << File.join(path,x,y)
-          FileUtils.mkdir_p(File.join(path,x,y))
-
-          'a'.upto('c') do |z|
-            @filenames << File.join(path,x,y,z)
-            FileUtils.touch(File.join(path,x,y,z))
-          end
-        end
-      end
-
-      @transaction.catalog.add_resource(resource)
-    end
-
-    it "should add the generated resources to the catalog" do
-      @transaction.eval_generate(resource)
-
-      @filenames.each do |file|
-        @transaction.catalog.resource(:file, file).should be_a(Puppet::Type.type(:file))
-      end
-    end
-
-    it "should add a sentinel whit for the resource" do
-      @transaction.eval_generate(resource)
-
-      find_vertex(:whit, "completed_#{path}").should be_a(Puppet::Type.type(:whit))
-    end
-
-    it "should replace dependencies on the resource with dependencies on the sentinel" do
-      dependent = Puppet::Type.type(:notify).new(:name => "hello", :require => resource)
-
-      @transaction.catalog.add_resource(dependent)
-
-      res = find_vertex(resource.type, resource.title)
-      generated = find_vertex(dependent.type, dependent.title)
-
-      graph.should be_edge(res, generated)
-
-      @transaction.eval_generate(resource)
-
-      sentinel = find_vertex(:whit, "completed_#{path}")
-
-      graph.should be_edge(sentinel, generated)
-      graph.should_not be_edge(res, generated)
-    end
-
-    it "should add an edge from the nearest ancestor to the generated resource" do
-      @transaction.eval_generate(resource)
-
-      @filenames.each do |file|
-        v = find_vertex(:file, file)
-        p = find_vertex(:file, File.dirname(file))
-
-        graph.should be_edge(p, v)
-      end
-    end
-
-    it "should add an edge from each generated resource to the sentinel" do
-      @transaction.eval_generate(resource)
-
-      sentinel = find_vertex(:whit, "completed_#{path}")
-      @filenames.each do |file|
-        v = find_vertex(:file, file)
-
-        graph.should be_edge(v, sentinel)
-      end
-    end
-
-    it "should add an edge from the resource to the sentinel" do
-      @transaction.eval_generate(resource)
-
-      res = find_vertex(:file, path)
-      sentinel = find_vertex(:whit, "completed_#{path}")
-
-      graph.should be_edge(res, sentinel)
-    end
-
-    it "should return false if an error occured when generating resources" do
-      resource.stubs(:eval_generate).raises(Puppet::Error)
-
-      @transaction.eval_generate(resource).should == false
-    end
-
-    it "should return true if resources were generated" do
-      @transaction.eval_generate(resource).should == true
-    end
-
-    it "should not add a sentinel if no resources are generated" do
-      path2 = tmpfile('empty')
-      other_file = Puppet::Type.type(:file).new(:path => path2)
-
-      @transaction.catalog.add_resource(other_file)
-
-      @transaction.eval_generate(other_file).should == false
-
-      find_vertex(:whit, "completed_#{path2}").should be_nil
+      expect(@transaction).to be_any_failed
     end
   end
 
@@ -311,7 +190,7 @@ describe Puppet::Transaction do
 
       graph.unblock(resource)
 
-      graph.blockers[resource].should == 2
+      expect(graph.blockers[resource]).to eq(2)
     end
 
     it "should decrement the number of blockers if there are any" do
@@ -319,7 +198,7 @@ describe Puppet::Transaction do
 
       graph.unblock(resource)
 
-      graph.blockers[resource].should == 39
+      expect(graph.blockers[resource]).to eq(39)
     end
 
     it "should warn if there are no blockers" do
@@ -333,51 +212,17 @@ describe Puppet::Transaction do
     it "should return true if the resource is now unblocked" do
       graph.blockers[resource] = 1
 
-      graph.unblock(resource).should == true
+      expect(graph.unblock(resource)).to eq(true)
     end
 
     it "should return false if the resource is still blocked" do
       graph.blockers[resource] = 2
 
-      graph.unblock(resource).should == false
-    end
-  end
-
-  describe "#finish" do
-    let(:graph) { @transaction.relationship_graph }
-    let(:path) { tmpdir('eval_generate') }
-    let(:resource) { Puppet::Type.type(:file).new(:path => path, :recurse => true) }
-
-    before :each do
-      @transaction.catalog.add_resource(resource)
-    end
-
-    it "should unblock the resource's dependents and queue them if ready" do
-      dependent = Puppet::Type.type(:file).new(:path => tmpfile('dependent'), :require => resource)
-      more_dependent = Puppet::Type.type(:file).new(:path => tmpfile('more_dependent'), :require => [resource, dependent])
-      @transaction.catalog.add_resource(dependent, more_dependent)
-
-      graph.finish(resource)
-
-      graph.blockers[dependent].should == 0
-      graph.blockers[more_dependent].should == 1
-
-      key = graph.unguessable_deterministic_key[dependent]
-
-      graph.ready[key].must == dependent
-
-      graph.ready.should_not be_has_key(graph.unguessable_deterministic_key[more_dependent])
-    end
-
-    it "should mark the resource as done" do
-      graph.finish(resource)
-
-      graph.done[resource].should == true
+      expect(graph.unblock(resource)).to eq(false)
     end
   end
 
   describe "when traversing" do
-    let(:graph) { @transaction.relationship_graph }
     let(:path) { tmpdir('eval_generate') }
     let(:resource) { Puppet::Type.type(:file).new(:path => path, :recurse => true) }
 
@@ -385,118 +230,45 @@ describe Puppet::Transaction do
       @transaction.catalog.add_resource(resource)
     end
 
-    it "should clear blockers if resources are added" do
-      graph.blockers['foo'] = 3
-      graph.blockers['bar'] = 4
-
-      graph.ready[graph.unguessable_deterministic_key[resource]] = resource
-
-      @transaction.expects(:eval_generate).with(resource).returns true
-
-      graph.traverse {}
-
-      graph.blockers.should be_empty
-    end
-
     it "should yield the resource even if eval_generate is called" do
-      graph.ready[graph.unguessable_deterministic_key[resource]] = resource
-
-      @transaction.expects(:eval_generate).with(resource).returns true
+      Puppet::Transaction::AdditionalResourceGenerator.any_instance.expects(:eval_generate).with(resource).returns true
 
       yielded = false
-      graph.traverse do |res|
+      @transaction.evaluate do |res|
         yielded = true if res == resource
       end
 
-      yielded.should == true
+      expect(yielded).to eq(true)
     end
 
     it "should prefetch the provider if necessary" do
       @transaction.expects(:prefetch_if_necessary).with(resource)
 
-      graph.traverse {}
+      @transaction.evaluate {}
     end
 
-    it "should not clear blockers if resources aren't added" do
-      graph.blockers['foo'] = 3
-      graph.blockers['bar'] = 4
-
-      graph.ready[graph.unguessable_deterministic_key[resource]] = resource
-
-      @transaction.expects(:eval_generate).with(resource).returns false
-
-      graph.traverse {}
-
-      graph.blockers.should == {'foo' => 3, 'bar' => 4, resource => 0}
-    end
-
-    it "should unblock all dependents of the resource" do
+    it "traverses independent resources before dependent resources" do
       dependent = Puppet::Type.type(:notify).new(:name => "hello", :require => resource)
-      dependent2 = Puppet::Type.type(:notify).new(:name => "goodbye", :require => resource)
-
-      @transaction.catalog.add_resource(dependent, dependent2)
-
-      # We enqueue them here just so we can check their blockers. This is done
-      # again in traverse.
-      graph.enqueue_roots
-
-      graph.blockers[dependent].should == 1
-      graph.blockers[dependent2].should == 1
-
-      graph.ready[graph.unguessable_deterministic_key[resource]] = resource
-
-      graph.traverse {}
-
-      graph.blockers[dependent].should == 0
-      graph.blockers[dependent2].should == 0
-    end
-
-    it "should enqueue any unblocked dependents" do
-      dependent = Puppet::Type.type(:notify).new(:name => "hello", :require => resource)
-      dependent2 = Puppet::Type.type(:notify).new(:name => "goodbye", :require => resource)
-
-      @transaction.catalog.add_resource(dependent, dependent2)
-
-      graph.enqueue_roots
-
-      graph.blockers[dependent].should == 1
-      graph.blockers[dependent2].should == 1
-
-      graph.ready[graph.unguessable_deterministic_key[resource]] = resource
+      @transaction.catalog.add_resource(dependent)
 
       seen = []
-
-      graph.traverse do |res|
+      @transaction.evaluate do |res|
         seen << res
       end
 
-      seen.should =~ [resource, dependent, dependent2]
+      expect(seen).to include_in_order(resource, dependent)
     end
 
-    it "should mark the resource done" do
-      graph.ready[graph.unguessable_deterministic_key[resource]] = resource
+    it "traverses completely independent resources in the order they appear in the catalog" do
+      independent = Puppet::Type.type(:notify).new(:name => "hello", :require => resource)
+      @transaction.catalog.add_resource(independent)
 
-      graph.traverse {}
-
-      graph.done[resource].should == true
-    end
-
-    it "should not evaluate the resource if it's not suitable" do
-      resource.stubs(:suitable?).returns false
-
-      graph.traverse do |resource|
-        raise "evaluated a resource"
+      seen = []
+      @transaction.evaluate do |res|
+        seen << res
       end
-    end
 
-    it "should defer an unsuitable resource unless it can't go on" do
-      other = Puppet::Type.type(:notify).new(:name => "hello")
-      @transaction.catalog.add_resource(other)
-
-      # Show that we check once, then get the resource back and check again
-      resource.expects(:suitable?).twice.returns(false).then.returns(true)
-
-      graph.traverse {}
+      expect(seen).to include_in_order(resource, independent)
     end
 
     it "should fail unsuitable resources and go on if it gets blocked" do
@@ -506,20 +278,20 @@ describe Puppet::Transaction do
       resource.stubs(:suitable?).returns false
 
       evaluated = []
-      graph.traverse do |res|
+      @transaction.evaluate do |res|
         evaluated << res
       end
 
       # We should have gone on to evaluate the children
-      evaluated.should == [dependent]
-      @transaction.resource_status(resource).should be_failed
+      expect(evaluated).to eq([dependent])
+      expect(@transaction.resource_status(resource)).to be_failed
     end
   end
 
   describe "when generating resources before traversal" do
     let(:catalog) { Puppet::Resource::Catalog.new }
-    let(:transaction) { Puppet::Transaction.new(catalog) }
-    let(:generator) { Puppet::Type.type(:notify).create :title => "generator" }
+    let(:transaction) { Puppet::Transaction.new(catalog, nil, Puppet::Graph::RandomPrioritizer.new) }
+    let(:generator) { Puppet::Type.type(:notify).new :title => "generator" }
     let(:generated) do
       %w[a b c].map { |name| Puppet::Type.type(:notify).new(:name => name) }
     end
@@ -527,39 +299,56 @@ describe Puppet::Transaction do
     before :each do
       catalog.add_resource generator
       generator.stubs(:generate).returns generated
+      # avoid crude failures because of nil resources that result
+      # from implicit containment and lacking containers
+      catalog.stubs(:container_of).returns generator
     end
 
     it "should call 'generate' on all created resources" do
       generated.each { |res| res.expects(:generate) }
 
-      transaction.add_dynamically_generated_resources
+      transaction.evaluate
     end
 
     it "should finish all resources" do
       generated.each { |res| res.expects(:finish) }
 
-      transaction.add_dynamically_generated_resources
-    end
-
-    it "should skip generated resources that conflict with existing resources" do
-      duplicate = generated.first
-      catalog.add_resource(duplicate)
-
-      duplicate.expects(:finish).never
-
-      duplicate.expects(:info).with { |msg| msg =~ /Duplicate generated resource/ }
-
-      transaction.add_dynamically_generated_resources
+      transaction.evaluate
     end
 
     it "should copy all tags to the newly generated resources" do
       generator.tag('one', 'two')
 
-      transaction.add_dynamically_generated_resources
+      transaction.evaluate
 
       generated.each do |res|
-        res.should be_tagged(generator.tags)
+        expect(res).to be_tagged(*generator.tags)
       end
+    end
+  end
+
+  describe "when performing pre-run checks" do
+    let(:resource) { Puppet::Type.type(:notify).new(:title => "spec") }
+    let(:transaction) { transaction_with_resource(resource) }
+    let(:spec_exception) { 'spec-exception' }
+
+    it "should invoke each resource's hook and apply the catalog after no failures" do
+      resource.expects(:pre_run_check)
+
+      transaction.evaluate
+    end
+
+    it "should abort the transaction on failure" do
+      resource.expects(:pre_run_check).raises(Puppet::Error, spec_exception)
+
+      expect { transaction.evaluate }.to raise_error(Puppet::Error, /Some pre-run checks failed/)
+    end
+
+    it "should log the resource-specific exception" do
+      resource.expects(:pre_run_check).raises(Puppet::Error, spec_exception)
+      resource.expects(:log_exception).with(responds_with(:message, spec_exception))
+
+      expect { transaction.evaluate }.to raise_error(Puppet::Error)
     end
   end
 
@@ -568,45 +357,62 @@ describe Puppet::Transaction do
       @resource = Puppet::Type.type(:notify).new :name => "foo"
       @catalog = Puppet::Resource::Catalog.new
       @resource.catalog = @catalog
-      @transaction = Puppet::Transaction.new(@catalog)
+      @transaction = Puppet::Transaction.new(@catalog, nil, nil)
     end
 
     it "should skip resource with missing tags" do
       @transaction.stubs(:missing_tags?).returns(true)
-      @transaction.should be_skip(@resource)
+      expect(@transaction).to be_skip(@resource)
     end
 
     it "should skip unscheduled resources" do
       @transaction.stubs(:scheduled?).returns(false)
-      @transaction.should be_skip(@resource)
+      expect(@transaction).to be_skip(@resource)
     end
 
     it "should skip resources with failed dependencies" do
       @transaction.stubs(:failed_dependencies?).returns(true)
-      @transaction.should be_skip(@resource)
+      expect(@transaction).to be_skip(@resource)
     end
 
     it "should skip virtual resource" do
       @resource.stubs(:virtual?).returns true
-      @transaction.should be_skip(@resource)
+      expect(@transaction).to be_skip(@resource)
     end
 
     it "should skip device only resouce on normal host" do
+      @resource.stubs(:appliable_to_host?).returns false
       @resource.stubs(:appliable_to_device?).returns true
       @transaction.for_network_device = false
-      @transaction.should be_skip(@resource)
+      expect(@transaction).to be_skip(@resource)
     end
 
     it "should not skip device only resouce on remote device" do
+      @resource.stubs(:appliable_to_host?).returns false
       @resource.stubs(:appliable_to_device?).returns true
       @transaction.for_network_device = true
-      @transaction.should_not be_skip(@resource)
+      expect(@transaction).not_to be_skip(@resource)
     end
 
     it "should skip host resouce on device" do
+      @resource.stubs(:appliable_to_host?).returns true
       @resource.stubs(:appliable_to_device?).returns false
       @transaction.for_network_device = true
-      @transaction.should be_skip(@resource)
+      expect(@transaction).to be_skip(@resource)
+    end
+
+    it "should not skip resouce available on both device and host when on device" do
+      @resource.stubs(:appliable_to_host?).returns true
+      @resource.stubs(:appliable_to_device?).returns true
+      @transaction.for_network_device = true
+      expect(@transaction).not_to be_skip(@resource)
+    end
+
+    it "should not skip resouce available on both device and host when on host" do
+      @resource.stubs(:appliable_to_host?).returns true
+      @resource.stubs(:appliable_to_device?).returns true
+      @transaction.for_network_device = false
+      expect(@transaction).not_to be_skip(@resource)
     end
   end
 
@@ -615,7 +421,7 @@ describe Puppet::Transaction do
       @resource = Puppet::Type.type(:notify).new :name => "foo"
       @catalog = Puppet::Resource::Catalog.new
       @resource.catalog = @catalog
-      @transaction = Puppet::Transaction.new(@catalog)
+      @transaction = Puppet::Transaction.new(@catalog, nil, nil)
 
       @transaction.stubs(:ignore_tags?).returns false
     end
@@ -625,20 +431,19 @@ describe Puppet::Transaction do
 
       @resource.expects(:tagged?).never
 
-      @transaction.should_not be_missing_tags(@resource)
+      expect(@transaction).not_to be_missing_tags(@resource)
     end
 
     it "should not be missing tags if the transaction tags are empty" do
       @transaction.tags = []
       @resource.expects(:tagged?).never
-      @transaction.should_not be_missing_tags(@resource)
+      expect(@transaction).not_to be_missing_tags(@resource)
     end
 
     it "should otherwise let the resource determine if it is missing tags" do
       tags = ['one', 'two']
       @transaction.tags = tags
-      @resource.expects(:tagged?).with(*tags).returns(false)
-      @transaction.should be_missing_tags(@resource)
+      expect(@transaction).to be_missing_tags(@resource)
     end
   end
 
@@ -646,57 +451,34 @@ describe Puppet::Transaction do
     before :each do
       @resource = Puppet::Type.type(:notify).new :name => "foo"
       @catalog = Puppet::Resource::Catalog.new
-      @resource.catalog = @catalog
-      @transaction = Puppet::Transaction.new(@catalog)
+      @catalog.add_resource(@resource)
+      @transaction = Puppet::Transaction.new(@catalog, nil, Puppet::Graph::RandomPrioritizer.new)
     end
 
     it "should always schedule resources if 'ignoreschedules' is set" do
       @transaction.ignoreschedules = true
       @transaction.resource_harness.expects(:scheduled?).never
 
-      @transaction.should be_scheduled(@resource)
+      @transaction.evaluate
+      expect(@transaction.resource_status(@resource)).to be_changed
     end
 
     it "should let the resource harness determine whether the resource should be scheduled" do
-      @transaction.resource_harness.expects(:scheduled?).with(@transaction.resource_status(@resource), @resource).returns "feh"
+      @transaction.resource_harness.expects(:scheduled?).with(@resource).returns "feh"
 
-      @transaction.scheduled?(@resource).should == "feh"
+      @transaction.evaluate
     end
   end
 
   describe "when prefetching" do
     let(:catalog) { Puppet::Resource::Catalog.new }
-    let(:transaction) { Puppet::Transaction.new(catalog) }
-    let(:resource) { Puppet::Type.type(:sshkey).create :title => "foo", :name => "bar", :type => :dsa, :key => "eh", :provider => :parsed }
-    let(:resource2) { Puppet::Type.type(:package).create :title => "blah", :provider => "apt" }
+    let(:transaction) { Puppet::Transaction.new(catalog, nil, nil) }
+    let(:resource) { Puppet::Type.type(:sshkey).new :title => "foo", :name => "bar", :type => :dsa, :key => "eh", :provider => :parsed }
+    let(:resource2) { Puppet::Type.type(:package).new :title => "blah", :provider => "apt" }
 
     before :each do
       catalog.add_resource resource
       catalog.add_resource resource2
-    end
-
-
-    describe "#resources_by_provider" do
-      it "should fetch resources by their type and provider" do
-        transaction.resources_by_provider(:sshkey, :parsed).should == {
-          resource.name => resource,
-        }
-
-        transaction.resources_by_provider(:package, :apt).should == {
-          resource2.name => resource2,
-        }
-      end
-
-      it "should omit resources whose types don't use providers" do
-        # faking the sshkey type not to have a provider
-        resource.class.stubs(:attrclass).returns nil
-
-        transaction.resources_by_provider(:sshkey, :parsed).should == {}
-      end
-
-      it "should return empty hash for providers with no resources" do
-        transaction.resources_by_provider(:package, :yum).should == {}
-      end
     end
 
     it "should match resources by name, not title" do
@@ -718,11 +500,11 @@ describe Puppet::Transaction do
 
       transaction.prefetch_if_necessary(resource)
 
-      transaction.prefetched_providers[:sshkey][:parsed].should be_true
+      expect(transaction.prefetched_providers[:sshkey][:parsed]).to be_truthy
     end
 
     it "should prefetch resources without a provider if prefetching the default provider" do
-      other = Puppet::Type.type(:sshkey).create :name => "other"
+      other = Puppet::Type.type(:sshkey).new :name => "other"
 
       other.instance_variable_set(:@provider, nil)
 
@@ -734,42 +516,98 @@ describe Puppet::Transaction do
     end
   end
 
-  it "should return all resources for which the resource status indicates the resource has changed when determinig changed resources" do
-    @catalog = Puppet::Resource::Catalog.new
-    @transaction = Puppet::Transaction.new(@catalog)
-    names = []
-    2.times do |i|
-      name = File.join(@basepath, "file#{i}")
-      resource = Puppet::Type.type(:file).new :path => name
-      names << resource.to_s
-      @catalog.add_resource resource
-      @transaction.add_resource_status Puppet::Resource::Status.new(resource)
+  describe "during teardown" do
+    let(:catalog) { Puppet::Resource::Catalog.new }
+    let(:transaction) do
+      Puppet::Transaction.new(catalog, nil, Puppet::Graph::RandomPrioritizer.new)
     end
 
-    @transaction.resource_status(names[0]).changed = true
+    let(:teardown_type) do
+      Puppet::Type.newtype(:teardown_test) do
+        newparam(:name) {}
+      end
+    end
 
-    @transaction.changed?.should == [@catalog.resource(names[0])]
+    before :each do
+      teardown_type.provide(:teardown_provider) do
+        class << self
+          attr_reader :result
+
+          def post_resource_eval
+            @result = 'passed'
+          end
+        end
+      end
+    end
+
+    it "should call ::post_resource_eval on provider classes that support it" do
+      resource = teardown_type.new(:title => "foo", :provider => :teardown_provider)
+
+      transaction = transaction_with_resource(resource)
+      transaction.evaluate
+
+      expect(resource.provider.class.result).to eq('passed')
+    end
+
+    it "should call ::post_resource_eval even if other providers' ::post_resource_eval fails" do
+      teardown_type.provide(:always_fails) do
+        class << self
+          attr_reader :result
+
+          def post_resource_eval
+            @result = 'failed'
+            raise Puppet::Error, "This provider always fails"
+          end
+        end
+      end
+
+      good_resource = teardown_type.new(:title => "bloo", :provider => :teardown_provider)
+      bad_resource  = teardown_type.new(:title => "blob", :provider => :always_fails)
+
+      catalog.add_resource(bad_resource)
+      catalog.add_resource(good_resource)
+
+      transaction.evaluate
+
+      expect(good_resource.provider.class.result).to eq('passed')
+      expect(bad_resource.provider.class.result).to eq('failed')
+    end
+
+    it "should call ::post_resource_eval even if one of the resources fails" do
+      resource = teardown_type.new(:title => "foo", :provider => :teardown_provider)
+      resource.stubs(:retrieve_resource).raises
+      catalog.add_resource resource
+
+      resource.provider.class.expects(:post_resource_eval)
+
+      transaction.evaluate
+    end
   end
 
   describe 'when checking application run state' do
     before do
-      without_warnings { Puppet::Application = Class.new(Puppet::Application) }
       @catalog = Puppet::Resource::Catalog.new
-      @transaction = Puppet::Transaction.new(@catalog)
+      @transaction = Puppet::Transaction.new(@catalog, nil, Puppet::Graph::RandomPrioritizer.new)
     end
 
-    after do
-      without_warnings { Puppet::Application = Puppet::Application.superclass }
-    end
+    context "when stop is requested" do
+      before :each do
+        Puppet::Application.stubs(:stop_requested?).returns(true)
+      end
 
-    it 'should return true for :stop_processing? if Puppet::Application.stop_requested? is true' do
-      Puppet::Application.stubs(:stop_requested?).returns(true)
-      @transaction.stop_processing?.should be_true
+      it 'should return true for :stop_processing?' do
+        expect(@transaction).to be_stop_processing
+      end
+
+      it 'always evaluates non-host_config catalogs' do
+        @catalog.host_config = false
+        expect(@transaction).not_to be_stop_processing
+      end
     end
 
     it 'should return false for :stop_processing? if Puppet::Application.stop_requested? is false' do
       Puppet::Application.stubs(:stop_requested?).returns(false)
-      @transaction.stop_processing?.should be_false
+      expect(@transaction.stop_processing?).to be_falsey
     end
 
     describe 'within an evaluate call' do
@@ -792,42 +630,107 @@ describe Puppet::Transaction do
       end
     end
   end
+
+  it "errors with a dependency cycle for a resource that requires itself" do
+    expect do
+      apply_compiled_manifest(<<-MANIFEST)
+        notify { cycle: require => Notify[cycle] }
+      MANIFEST
+    end.to raise_error(Puppet::Error, /Found 1 dependency cycle:.*\(Notify\[cycle\] => Notify\[cycle\]\)/m)
+  end
+
+  it "errors with a dependency cycle for a self-requiring resource also required by another resource" do
+    expect do
+      apply_compiled_manifest(<<-MANIFEST)
+        notify { cycle: require => Notify[cycle] }
+        notify { other: require => Notify[cycle] }
+      MANIFEST
+    end.to raise_error(Puppet::Error, /Found 1 dependency cycle:.*\(Notify\[cycle\] => Notify\[cycle\]\)/m)
+  end
+
+  it "errors with a dependency cycle for a resource that requires itself and another resource" do
+    expect do
+      apply_compiled_manifest(<<-MANIFEST)
+        notify { cycle:
+          require => [Notify[other], Notify[cycle]]
+        }
+        notify { other: }
+      MANIFEST
+    end.to raise_error(Puppet::Error, /Found 1 dependency cycle:.*\(Notify\[cycle\] => Notify\[cycle\]\)/m)
+  end
+
+  it "errors with a dependency cycle for a resource that is later modified to require itself" do
+    expect do
+      apply_compiled_manifest(<<-MANIFEST)
+        notify { cycle: }
+        Notify <| title == 'cycle' |> {
+          require => Notify[cycle]
+        }
+      MANIFEST
+    end.to raise_error(Puppet::Error, /Found 1 dependency cycle:.*\(Notify\[cycle\] => Notify\[cycle\]\)/m)
+  end
+
+  it "reports a changed resource with a successful run" do
+    transaction = apply_compiled_manifest("notify { one: }")
+
+    expect(transaction.report.status).to eq('changed')
+    expect(transaction.report.resource_statuses['Notify[one]']).to be_changed
+  end
+
+  describe "when interrupted" do
+    it "marks unprocessed resources as skipped" do
+      Puppet::Application.stop!
+
+      transaction = apply_compiled_manifest(<<-MANIFEST)
+        notify { a: } ->
+        notify { b: }
+      MANIFEST
+
+      expect(transaction.report.resource_statuses['Notify[a]']).to be_skipped
+      expect(transaction.report.resource_statuses['Notify[b]']).to be_skipped
+    end
+  end
 end
 
 describe Puppet::Transaction, " when determining tags" do
   before do
     @config = Puppet::Resource::Catalog.new
-    @transaction = Puppet::Transaction.new(@config)
+    @transaction = Puppet::Transaction.new(@config, nil, nil)
   end
 
   it "should default to the tags specified in the :tags setting" do
-    Puppet.expects(:[]).with(:tags).returns("one")
-    @transaction.tags.should == %w{one}
+    Puppet[:tags] = "one"
+    expect(@transaction).to be_tagged("one")
   end
 
   it "should split tags based on ','" do
-    Puppet.expects(:[]).with(:tags).returns("one,two")
-    @transaction.tags.should == %w{one two}
+    Puppet[:tags] = "one,two"
+    expect(@transaction).to be_tagged("one")
+    expect(@transaction).to be_tagged("two")
   end
 
   it "should use any tags set after creation" do
-    Puppet.expects(:[]).with(:tags).never
+    Puppet[:tags] = ""
     @transaction.tags = %w{one two}
-    @transaction.tags.should == %w{one two}
+    expect(@transaction).to be_tagged("one")
+    expect(@transaction).to be_tagged("two")
   end
 
   it "should always convert assigned tags to an array" do
     @transaction.tags = "one::two"
-    @transaction.tags.should == %w{one::two}
+    expect(@transaction).to be_tagged("one::two")
   end
 
   it "should accept a comma-delimited string" do
     @transaction.tags = "one, two"
-    @transaction.tags.should == %w{one two}
+    expect(@transaction).to be_tagged("one")
+    expect(@transaction).to be_tagged("two")
   end
 
   it "should accept an empty string" do
+    @transaction.tags = "one, two"
+    expect(@transaction).to be_tagged("one")
     @transaction.tags = ""
-    @transaction.tags.should == []
+    expect(@transaction).not_to be_tagged("one")
   end
 end

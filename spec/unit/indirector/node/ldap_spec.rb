@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/indirector/node/ldap'
@@ -6,7 +6,7 @@ require 'puppet/indirector/node/ldap'
 describe Puppet::Node::Ldap do
   let(:nodename) { "mynode.domain.com" }
   let(:node_indirection) { Puppet::Node::Ldap.new }
-  let(:environment) { Puppet::Node::Environment.new("myenv") }
+  let(:environment) { Puppet::Node::Environment.create(:myenv, []) }
   let(:fact_values) { {:afact => "a value", "one" => "boo"} }
   let(:facts) { Puppet::Node::Facts.new(nodename, fact_values) }
 
@@ -28,7 +28,7 @@ describe Puppet::Node::Ldap do
       node_indirection.expects(:ldapsearch).with("(&(objectclass=puppetClient)(cn=#{nodename}))").yields entry
       myhash = {"myhash" => true}
       node_indirection.expects(:entry2hash).with(entry).returns myhash
-      node_indirection.name2hash(nodename).should == myhash
+      expect(node_indirection.name2hash(nodename)).to eq(myhash)
     end
 
     # This heavily tests our entry2hash method, so we don't have to stub out the stupid entry information any more.
@@ -39,20 +39,20 @@ describe Puppet::Node::Ldap do
       end
 
       it "should convert the entry to a hash" do
-        node_indirection.entry2hash(@entry).should be_instance_of(Hash)
+        expect(node_indirection.entry2hash(@entry)).to be_instance_of(Hash)
       end
 
       it "should add the entry's common name to the hash if fqdn if false" do
-        node_indirection.entry2hash(@entry,fqdn = false)[:name].should == "mynode"
+        expect(node_indirection.entry2hash(@entry,fqdn = false)[:name]).to eq("mynode")
       end
 
       it "should add the entry's fqdn name to the hash if fqdn if true" do
-        node_indirection.entry2hash(@entry,fqdn = true)[:name].should == "mynode.madstop.com"
+        expect(node_indirection.entry2hash(@entry,fqdn = true)[:name]).to eq("mynode.madstop.com")
       end
 
       it "should add all of the entry's classes to the hash" do
         @entry.stubs(:vals).with("puppetclass").returns %w{one two}
-        node_indirection.entry2hash(@entry)[:classes].should == %w{one two}
+        expect(node_indirection.entry2hash(@entry)[:classes]).to eq(%w{one two})
       end
 
       it "should deduplicate class values" do
@@ -60,65 +60,65 @@ describe Puppet::Node::Ldap do
         node_indirection.stubs(:class_attributes).returns(%w{one two})
         @entry.stubs(:vals).with("one").returns(%w{a b})
         @entry.stubs(:vals).with("two").returns(%w{b c})
-        node_indirection.entry2hash(@entry)[:classes].should == %w{a b c}
+        expect(node_indirection.entry2hash(@entry)[:classes]).to eq(%w{a b c})
       end
 
       it "should add the entry's environment to the hash" do
         @entry.stubs(:to_hash).returns("environment" => %w{production})
-        node_indirection.entry2hash(@entry)[:environment].should == "production"
+        expect(node_indirection.entry2hash(@entry)[:environment]).to eq("production")
       end
 
       it "should add all stacked parameters as parameters in the hash" do
         @entry.stubs(:vals).with("puppetvar").returns(%w{one=two three=four})
         result = node_indirection.entry2hash(@entry)
-        result[:parameters]["one"].should == "two"
-        result[:parameters]["three"].should == "four"
+        expect(result[:parameters]["one"]).to eq("two")
+        expect(result[:parameters]["three"]).to eq("four")
       end
 
       it "should not add the stacked parameter as a normal parameter" do
         @entry.stubs(:vals).with("puppetvar").returns(%w{one=two three=four})
         @entry.stubs(:to_hash).returns("puppetvar" => %w{one=two three=four})
-        node_indirection.entry2hash(@entry)[:parameters]["puppetvar"].should be_nil
+        expect(node_indirection.entry2hash(@entry)[:parameters]["puppetvar"]).to be_nil
       end
 
       it "should add all other attributes as parameters in the hash" do
         @entry.stubs(:to_hash).returns("foo" => %w{one two})
-        node_indirection.entry2hash(@entry)[:parameters]["foo"].should == %w{one two}
+        expect(node_indirection.entry2hash(@entry)[:parameters]["foo"]).to eq(%w{one two})
       end
 
       it "should return single-value parameters as strings, not arrays" do
         @entry.stubs(:to_hash).returns("foo" => %w{one})
-        node_indirection.entry2hash(@entry)[:parameters]["foo"].should == "one"
+        expect(node_indirection.entry2hash(@entry)[:parameters]["foo"]).to eq("one")
       end
 
       it "should convert 'true' values to the boolean 'true'" do
         @entry.stubs(:to_hash).returns({"one" => ["true"]})
-        node_indirection.entry2hash(@entry)[:parameters]["one"].should == true
+        expect(node_indirection.entry2hash(@entry)[:parameters]["one"]).to eq(true)
       end
 
       it "should convert 'false' values to the boolean 'false'" do
         @entry.stubs(:to_hash).returns({"one" => ["false"]})
-        node_indirection.entry2hash(@entry)[:parameters]["one"].should == false
+        expect(node_indirection.entry2hash(@entry)[:parameters]["one"]).to eq(false)
       end
 
       it "should convert 'true' values to the boolean 'true' inside an array" do
         @entry.stubs(:to_hash).returns({"one" => ["true", "other"]})
-        node_indirection.entry2hash(@entry)[:parameters]["one"].should == [true, "other"]
+        expect(node_indirection.entry2hash(@entry)[:parameters]["one"]).to eq([true, "other"])
       end
 
       it "should convert 'false' values to the boolean 'false' inside an array" do
         @entry.stubs(:to_hash).returns({"one" => ["false", "other"]})
-        node_indirection.entry2hash(@entry)[:parameters]["one"].should == [false, "other"]
+        expect(node_indirection.entry2hash(@entry)[:parameters]["one"]).to eq([false, "other"])
       end
 
       it "should add the parent's name if present" do
         @entry.stubs(:vals).with("parentnode").returns(%w{foo})
-        node_indirection.entry2hash(@entry)[:parent].should == "foo"
+        expect(node_indirection.entry2hash(@entry)[:parent]).to eq("foo")
       end
 
       it "should fail if more than one parent is specified" do
         @entry.stubs(:vals).with("parentnode").returns(%w{foo})
-        node_indirection.entry2hash(@entry)[:parent].should == "foo"
+        expect(node_indirection.entry2hash(@entry)[:parent]).to eq("foo")
       end
     end
 
@@ -142,12 +142,12 @@ describe Puppet::Node::Ldap do
 
     it "should return nil if no results are found in ldap" do
       node_indirection.stubs(:name2hash).returns nil
-      node_indirection.find(request).should be_nil
+      expect(node_indirection.find(request)).to be_nil
     end
 
     it "should return a node object if results are found in ldap" do
       node_indirection.stubs(:name2hash).returns({})
-      node_indirection.find(request).should be
+      expect(node_indirection.find(request)).to be
     end
 
     describe "and node information is found in LDAP" do
@@ -160,32 +160,35 @@ describe Puppet::Node::Ldap do
         node_indirection.expects(:name2hash).with(nodename).returns nil
         node_indirection.expects(:name2hash).with("mynode").returns @result
 
-        node_indirection.find(request).name.should == nodename
+        expect(node_indirection.find(request).name).to eq(nodename)
       end
 
       it "should add any classes from ldap" do
         classes = %w{a b c d}
         @result[:classes] = classes
-        node_indirection.find(request).classes.should == classes
+        expect(node_indirection.find(request).classes).to eq(classes)
       end
 
       it "should add all entry attributes as node parameters" do
         params = {"one" => "two", "three" => "four"}
         @result[:parameters] = params
-        node_indirection.find(request).parameters.should include(params)
+        expect(node_indirection.find(request).parameters).to include(params)
       end
 
       it "should set the node's environment to the environment of the results" do
-        result_env = Puppet::Node::Environment.new("local_test")
+        result_env = Puppet::Node::Environment.create(:local_test, [])
         Puppet::Node::Facts.indirection.stubs(:find).with(nodename, :environment => result_env).returns(facts)
         @result[:environment] = "local_test"
-        node_indirection.find(request).environment.should == result_env
+
+        Puppet.override(:environments => Puppet::Environments::Static.new(result_env)) do
+          expect(node_indirection.find(request).environment).to eq(result_env)
+        end
       end
 
       it "should retain false parameter values" do
         @result[:parameters] = {}
         @result[:parameters]["one"] = false
-        node_indirection.find(request).parameters.should include({"one" => false})
+        expect(node_indirection.find(request).parameters).to include({"one" => false})
       end
 
       it "should merge the node's facts after the parameters from ldap are assigned" do
@@ -196,7 +199,7 @@ describe Puppet::Node::Ldap do
         # Node implements its own merge so that an existing param takes
         # precedence over facts. We get the same result here by merging params
         # into facts
-        node_indirection.find(request).parameters.should == facts.values.merge(params)
+        expect(node_indirection.find(request).parameters).to eq(facts.values.merge(params))
       end
 
       describe "and a parent node is specified" do
@@ -225,7 +228,7 @@ describe Puppet::Node::Ldap do
 
           node_indirection.expects(:name2hash).with('parent').returns nil
 
-          proc { node_indirection.find(request) }.should raise_error(Puppet::Error, /Could not find parent node/)
+          expect { node_indirection.find(request) }.to raise_error(Puppet::Error, /Could not find parent node/)
         end
 
         it "should add any parent classes to the node's classes" do
@@ -234,7 +237,7 @@ describe Puppet::Node::Ldap do
 
           @parent[:classes] = %w{c d}
 
-          node_indirection.find(request).classes.should == %w{a b c d}
+          expect(node_indirection.find(request).classes).to eq(%w{a b c d})
         end
 
         it "should add any parent parameters to the node's parameters" do
@@ -243,7 +246,7 @@ describe Puppet::Node::Ldap do
 
           @parent[:parameters]["three"] = "four"
 
-          node_indirection.find(request).parameters.should include({"one" => "two", "three" => "four"})
+          expect(node_indirection.find(request).parameters).to include({"one" => "two", "three" => "four"})
         end
 
         it "should prefer node parameters over parent parameters" do
@@ -252,21 +255,24 @@ describe Puppet::Node::Ldap do
 
           @parent[:parameters]["one"] = "three"
 
-          node_indirection.find(request).parameters.should include({"one" => "two"})
+          expect(node_indirection.find(request).parameters).to include({"one" => "two"})
         end
 
         it "should use the parent's environment if the node has none" do
-          env = Puppet::Node::Environment.new("parent")
+          env = Puppet::Node::Environment.create(:parent, [])
           @entry[:parent] = "parent"
 
           @parent[:environment] = "parent"
 
           Puppet::Node::Facts.indirection.stubs(:find).with(nodename, :environment => env).returns(facts)
-          node_indirection.find(request).environment.should == env
+
+          Puppet.override(:environments => Puppet::Environments::Static.new(env)) do
+            expect(node_indirection.find(request).environment).to eq(env)
+          end
         end
 
         it "should prefer the node's environment to the parent's" do
-          child_env = Puppet::Node::Environment.new("child")
+          child_env = Puppet::Node::Environment.create(:child, [])
           @entry[:parent] = "parent"
           @entry[:environment] = "child"
 
@@ -274,7 +280,10 @@ describe Puppet::Node::Ldap do
 
           Puppet::Node::Facts.indirection.stubs(:find).with(nodename, :environment => child_env).returns(facts)
 
-          node_indirection.find(request).environment.should == child_env
+          Puppet.override(:environments => Puppet::Environments::Static.new(child_env)) do
+
+            expect(node_indirection.find(request).environment).to eq(child_env)
+          end
         end
 
         it "should recursively look up parent information" do
@@ -286,13 +295,13 @@ describe Puppet::Node::Ldap do
 
           @parent_parent[:parameters]["five"] = "six"
 
-          node_indirection.find(request).parameters.should include("one" => "two", "three" => "four", "five" => "six")
+          expect(node_indirection.find(request).parameters).to include("one" => "two", "three" => "four", "five" => "six")
         end
 
         it "should not allow loops in parent declarations" do
           @entry[:parent] = "parent"
           @parent[:parent] = nodename
-          proc { node_indirection.find(request) }.should raise_error(ArgumentError)
+          expect { node_indirection.find(request) }.to raise_error(ArgumentError)
         end
       end
     end
@@ -341,14 +350,14 @@ describe Puppet::Node::Ldap do
       node_indirection.expects(:ldapsearch).yields("whatever")
       node_indirection.expects(:entry2hash).with("whatever",nil).returns(:name => nodename)
       result = node_indirection.search(request)
-      result[0].should be_instance_of(Puppet::Node)
-      result[0].name.should == nodename
+      expect(result[0]).to be_instance_of(Puppet::Node)
+      expect(result[0].name).to eq(nodename)
     end
 
     it "should merge each node's facts" do
       node_indirection.stubs(:ldapsearch).yields("one")
       node_indirection.stubs(:entry2hash).with("one",nil).returns(:name => nodename)
-      node_indirection.search(request)[0].parameters.should include(fact_values)
+      expect(node_indirection.search(request)[0].parameters).to include(fact_values)
     end
 
     it "should pass the request's fqdn option to entry2hash" do
@@ -361,72 +370,72 @@ describe Puppet::Node::Ldap do
 
   describe Puppet::Node::Ldap, " when developing the search query" do
     it "should return the value of the :ldapclassattrs split on commas as the class attributes" do
-      Puppet.stubs(:[]).with(:ldapclassattrs).returns("one,two")
-      node_indirection.class_attributes.should == %w{one two}
+      Puppet[:ldapclassattrs] = "one,two"
+      expect(node_indirection.class_attributes).to eq(%w{one two})
     end
 
     it "should return nil as the parent attribute if the :ldapparentattr is set to an empty string" do
-      Puppet.stubs(:[]).with(:ldapparentattr).returns("")
-      node_indirection.parent_attribute.should be_nil
+      Puppet[:ldapparentattr] = ""
+      expect(node_indirection.parent_attribute).to be_nil
     end
 
     it "should return the value of the :ldapparentattr as the parent attribute" do
-      Puppet.stubs(:[]).with(:ldapparentattr).returns("pere")
-      node_indirection.parent_attribute.should == "pere"
+      Puppet[:ldapparentattr] = "pere"
+      expect(node_indirection.parent_attribute).to eq("pere")
     end
 
     it "should use the value of the :ldapstring as the search filter" do
-      Puppet.stubs(:[]).with(:ldapstring).returns("mystring")
-      node_indirection.search_filter("testing").should == "mystring"
+      Puppet[:ldapstring] = "mystring"
+      expect(node_indirection.search_filter("testing")).to eq("mystring")
     end
 
     it "should replace '%s' with the node name in the search filter if it is present" do
-      Puppet.stubs(:[]).with(:ldapstring).returns("my%sstring")
-      node_indirection.search_filter("testing").should == "mytestingstring"
+      Puppet[:ldapstring] = "my%sstring"
+      expect(node_indirection.search_filter("testing")).to eq("mytestingstring")
     end
 
     it "should not modify the global :ldapstring when replacing '%s' in the search filter" do
       filter = mock 'filter'
       filter.expects(:include?).with("%s").returns(true)
       filter.expects(:gsub).with("%s", "testing").returns("mynewstring")
-      Puppet.stubs(:[]).with(:ldapstring).returns(filter)
-      node_indirection.search_filter("testing").should == "mynewstring"
+      Puppet[:ldapstring] = filter
+      expect(node_indirection.search_filter("testing")).to eq("mynewstring")
     end
   end
 
   describe Puppet::Node::Ldap, " when deciding attributes to search for" do
     it "should use 'nil' if the :ldapattrs setting is 'all'" do
-      Puppet.stubs(:[]).with(:ldapattrs).returns("all")
-      node_indirection.search_attributes.should be_nil
+      Puppet[:ldapattrs] = "all"
+      expect(node_indirection.search_attributes).to be_nil
     end
 
     it "should split the value of :ldapattrs on commas and use the result as the attribute list" do
-      Puppet.stubs(:[]).with(:ldapattrs).returns("one,two")
+      Puppet[:ldapattrs] = "one,two"
       node_indirection.stubs(:class_attributes).returns([])
       node_indirection.stubs(:parent_attribute).returns(nil)
-      node_indirection.search_attributes.should == %w{one two}
+      expect(node_indirection.search_attributes).to eq(%w{one two})
     end
 
     it "should add the class attributes to the search attributes if not returning all attributes" do
-      Puppet.stubs(:[]).with(:ldapattrs).returns("one,two")
+      Puppet[:ldapattrs] = "one,two"
       node_indirection.stubs(:class_attributes).returns(%w{three four})
       node_indirection.stubs(:parent_attribute).returns(nil)
       # Sort them so i don't have to care about return order
-      node_indirection.search_attributes.sort.should == %w{one two three four}.sort
+      expect(node_indirection.search_attributes.sort).to eq(%w{one two three four}.sort)
     end
 
     it "should add the parent attribute to the search attributes if not returning all attributes" do
-      Puppet.stubs(:[]).with(:ldapattrs).returns("one,two")
+      Puppet[:ldapattrs] = "one,two"
       node_indirection.stubs(:class_attributes).returns([])
       node_indirection.stubs(:parent_attribute).returns("parent")
-      node_indirection.search_attributes.sort.should == %w{one two parent}.sort
+      expect(node_indirection.search_attributes.sort).to eq(%w{one two parent}.sort)
     end
 
     it "should not add nil parent attributes to the search attributes" do
-      Puppet.stubs(:[]).with(:ldapattrs).returns("one,two")
+      Puppet[:ldapattrs] = "one,two"
       node_indirection.stubs(:class_attributes).returns([])
       node_indirection.stubs(:parent_attribute).returns(nil)
-      node_indirection.search_attributes.should == %w{one two}
+      expect(node_indirection.search_attributes).to eq(%w{one two})
     end
   end
 end

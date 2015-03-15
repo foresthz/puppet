@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/util/backups'
@@ -6,155 +6,129 @@ require 'puppet/util/backups'
 describe Puppet::Util::Backups do
   include PuppetSpec::Files
 
-  before do
-    FileTest.stubs(:exists?).returns true
-    @nosuchfile = make_absolute('/no/such/file')
+  let(:bucket) { stub('bucket', :name => "foo") }
+  let!(:file) do
+    f = Puppet::Type.type(:file).new(:name => path, :backup => 'foo')
+    f.stubs(:bucket).returns(bucket)
+    f
   end
 
   describe "when backing up a file" do
+    let(:path) { make_absolute('/no/such/file') }
+
     it "should noop if the file does not exist" do
-      FileTest.expects(:exists?).with(@nosuchfile).returns false
-      file = Puppet::Type.type(:file).new(:name => @nosuchfile)
+      file = Puppet::Type.type(:file).new(:name => path)
+
       file.expects(:bucket).never
+      Puppet::FileSystem.expects(:exist?).with(path).returns false
 
       file.perform_backup
     end
 
     it "should succeed silently if self[:backup] is false" do
-      file = Puppet::Type.type(:file).new(:name => @nosuchfile, :backup => false)
+      file = Puppet::Type.type(:file).new(:name => path, :backup => false)
+
       file.expects(:bucket).never
-      FileTest.expects(:exists?).never
+      Puppet::FileSystem.expects(:exist?).never
+
       file.perform_backup
     end
 
     it "a bucket should be used when provided" do
-      path = make_absolute('/my/file')
-
-      File.stubs(:stat).with(path).returns(mock('stat', :ftype => 'file'))
-
-      file = Puppet::Type.type(:file).new(:name => path, :backup => 'foo')
-      bucket = stub('bucket', 'name' => 'foo')
-      file.stubs(:bucket).returns bucket
-
+      lstat_path_as(path, 'file')
       bucket.expects(:backup).with(path).returns("mysum")
+      Puppet::FileSystem.expects(:exist?).with(path).returns(true)
 
       file.perform_backup
     end
 
     it "should propagate any exceptions encountered when backing up to a filebucket" do
-      path = make_absolute('/my/file')
-
-      File.stubs(:stat).with(path).returns(mock('stat', :ftype => 'file'))
-
-      file = Puppet::Type.type(:file).new(:name => path, :backup => 'foo')
-      bucket = stub('bucket', 'name' => 'foo')
-      file.stubs(:bucket).returns bucket
-
+      lstat_path_as(path, 'file')
       bucket.expects(:backup).raises ArgumentError
+      Puppet::FileSystem.expects(:exist?).with(path).returns(true)
 
-      lambda { file.perform_backup }.should raise_error(ArgumentError)
+      expect { file.perform_backup }.to raise_error(ArgumentError)
     end
 
-    describe "and no filebucket is configured" do
+    describe "and local backup is configured" do
+      let(:ext) { 'foobkp' }
+      let(:backup) { path + '.' + ext }
+      let(:file) { Puppet::Type.type(:file).new(:name => path, :backup => '.'+ext) }
+
       it "should remove any local backup if one exists" do
-        path = make_absolute('/my/file')
-        FileTest.stubs(:exists?).returns true
-
-        backup = path + ".foo"
-
-        File.expects(:lstat).with(backup).returns stub("stat", :ftype => "file")
-        File.expects(:unlink).with(backup)
-
+        lstat_path_as(backup, 'file')
+        Puppet::FileSystem.expects(:unlink).with(backup)
         FileUtils.stubs(:cp_r)
+        Puppet::FileSystem.expects(:exist?).with(path).returns(true)
 
-        file = Puppet::Type.type(:file).new(:name => path, :backup => '.foo')
         file.perform_backup
       end
 
       it "should fail when the old backup can't be removed" do
-        path = make_absolute('/my/file')
-        FileTest.stubs(:exists?).returns true
-
-        backup = path + ".foo"
-
-        File.expects(:lstat).with(backup).returns stub("stat", :ftype => "file")
-        File.expects(:unlink).raises ArgumentError
-
+        lstat_path_as(backup, 'file')
+        Puppet::FileSystem.expects(:unlink).with(backup).raises ArgumentError
         FileUtils.expects(:cp_r).never
+        Puppet::FileSystem.expects(:exist?).with(path).returns(true)
 
-        file = Puppet::Type.type(:file).new(:name => path, :backup => '.foo')
-        lambda { file.perform_backup }.should raise_error(Puppet::Error)
+        expect { file.perform_backup }.to raise_error(Puppet::Error)
       end
 
       it "should not try to remove backups that don't exist" do
-        path = make_absolute('/my/file')
-        FileTest.stubs(:exists?).returns true
-
-        backup = path + ".foo"
-
-        File.expects(:lstat).with(backup).raises(Errno::ENOENT)
-        File.expects(:unlink).never
-
+        Puppet::FileSystem.expects(:lstat).with(backup).raises(Errno::ENOENT)
+        Puppet::FileSystem.expects(:unlink).with(backup).never
         FileUtils.stubs(:cp_r)
+        Puppet::FileSystem.expects(:exist?).with(path).returns(true)
 
-        file = Puppet::Type.type(:file).new(:name => path, :backup => '.foo')
         file.perform_backup
       end
 
       it "a copy should be created in the local directory" do
-        path = make_absolute('/my/file')
-        FileTest.stubs(:exists?).with(path).returns true
+        FileUtils.expects(:cp_r).with(path, backup, :preserve => true)
+        Puppet::FileSystem.stubs(:exist?).with(path).returns(true)
 
-        FileUtils.expects(:cp_r).with(path, path + ".foo", :preserve => true)
-
-        file = Puppet::Type.type(:file).new(:name => path, :backup => '.foo')
-        file.perform_backup.should be_true
+        expect(file.perform_backup).to be_truthy
       end
 
       it "should propagate exceptions if no backup can be created" do
-        path = make_absolute('/my/file')
-        FileTest.stubs(:exists?).with(path).returns true
-
         FileUtils.expects(:cp_r).raises ArgumentError
 
-        file = Puppet::Type.type(:file).new(:name => path, :backup => '.foo')
-        lambda { file.perform_backup }.should raise_error(Puppet::Error)
+        Puppet::FileSystem.stubs(:exist?).with(path).returns(true)
+        expect { file.perform_backup }.to raise_error(Puppet::Error)
       end
     end
   end
 
   describe "when backing up a directory" do
+    let(:path) { make_absolute('/my/dir') }
+    let(:filename) { File.join(path, 'file') }
+
     it "a bucket should work when provided" do
-      path = make_absolute('/my/dir')
+      File.stubs(:file?).with(filename).returns true
+      Find.expects(:find).with(path).yields(filename)
 
-      File.stubs(:file?).returns true
-      Find.expects(:find).with(path).yields(make_absolute("/my/dir/file"))
+      bucket.expects(:backup).with(filename).returns true
 
-      bucket = stub('bucket', :name => "eh")
-      bucket.expects(:backup).with(make_absolute("/my/dir/file")).returns true
+      lstat_path_as(path, 'directory')
 
-      file = Puppet::Type.type(:file).new(:name => path, :backup => 'foo')
-      file.stubs(:bucket).returns bucket
-
-      File.stubs(:stat).with(path).returns(stub('stat', :ftype => 'directory'))
+      Puppet::FileSystem.stubs(:exist?).with(path).returns(true)
+      Puppet::FileSystem.stubs(:exist?).with(filename).returns(true)
 
       file.perform_backup
     end
 
     it "should do nothing when recursing" do
-      path = make_absolute('/my/dir')
-
-      bucket = stub('bucket', :name => "eh")
-      bucket.expects(:backup).never
-
       file = Puppet::Type.type(:file).new(:name => path, :backup => 'foo', :recurse => true)
-      file.stubs(:bucket).returns bucket
 
-      File.stubs(:stat).with(path).returns(stub('stat', :ftype => 'directory'))
-
+      bucket.expects(:backup).never
+      stub_file = stub('file', :stat => stub('stat', :ftype => 'directory'))
+      Puppet::FileSystem.stubs(:new).with(path).returns stub_file
       Find.expects(:find).never
 
       file.perform_backup
     end
+  end
+
+  def lstat_path_as(path, ftype)
+    Puppet::FileSystem.expects(:lstat).with(path).returns(stub('File::Stat', :ftype => ftype))
   end
 end

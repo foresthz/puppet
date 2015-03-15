@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 provider_class = Puppet::Type.type(:package).provider(:freebsd)
@@ -21,7 +21,7 @@ describe provider_class do
 
   it "should have an install method" do
     @provider = provider_class.new
-    @provider.should respond_to(:install)
+    expect(@provider).to respond_to(:install)
   end
 
   describe "when installing" do
@@ -36,7 +36,7 @@ describe provider_class do
       Puppet::Util.expects(:withenv).once.with({:PKG_PATH => path}).yields
       @provider.expects(:pkgadd).once.with("mypackage")
 
-      expect { @provider.install }.should_not raise_error
+      expect { @provider.install }.to_not raise_error
     end
 
     %w{http https ftp}.each do |protocol|
@@ -47,7 +47,7 @@ describe provider_class do
         Puppet::Util.expects(:withenv).once.with({:PACKAGESITE => path}).yields
         @provider.expects(:pkgadd).once.with('-r', "mypackage")
 
-        expect { @provider.install }.should_not raise_error
+        expect { @provider.install }.to_not raise_error
       end
     end
   end

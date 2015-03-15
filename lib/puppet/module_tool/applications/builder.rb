@@ -1,24 +1,26 @@
 require 'fileutils'
+require 'json'
+require 'puppet/file_system'
+require 'pathspec'
 
 module Puppet::ModuleTool
   module Applications
     class Builder < Application
 
       def initialize(path, options = {})
-        @path = File.expand_path(Puppet::ModuleTool.find_module_root(path))
+        @path = File.expand_path(path)
         @pkg_path = File.join(@path, 'pkg')
         super(options)
       end
 
       def run
-        load_modulefile!
+        load_metadata!
         create_directory
         copy_contents
-        add_metadata
+        write_json
         Puppet.notice "Building #{@path} for release"
-        tar
-        gzip
-        relative = Pathname.new(File.join(@pkg_path, filename('tar.gz'))).relative_path_from(Pathname.new(Dir.pwd))
+        pack
+        relative = Pathname.new(archive_file).relative_path_from(Pathname.new(File.expand_path(Dir.pwd)))
 
         # Return the Pathname object representing the path to the release
         # archive just created. This return value is used by the module_tool
@@ -34,27 +36,16 @@ module Puppet::ModuleTool
 
       private
 
-      def filename(ext)
-        ext.sub!(/^\./, '')
-        "#{metadata.release_name}.#{ext}"
+      def archive_file
+        File.join(@pkg_path, "#{metadata.release_name}.tar.gz")
       end
 
-      def tar
-        tar_name = filename('tar')
-        Dir.chdir(@pkg_path) do
-          FileUtils.rm tar_name rescue nil
-          unless system "tar -cf #{tar_name} #{metadata.release_name}"
-            raise RuntimeError, "Could not create #{tar_name}"
-          end
-        end
-      end
+      def pack
+        FileUtils.rm archive_file rescue nil
 
-      def gzip
+        tar = Puppet::ModuleTool::Tar.instance
         Dir.chdir(@pkg_path) do
-          FileUtils.rm filename('tar.gz') rescue nil
-          unless system "gzip #{filename('tar')}"
-            raise RuntimeError, "Could not compress #{filename('tar')}"
-          end
+          tar.pack(metadata.release_name, archive_file)
         end
       end
 
@@ -66,20 +57,86 @@ module Puppet::ModuleTool
         FileUtils.mkdir(build_path)
       end
 
-      def copy_contents
-        Dir[File.join(@path, '*')].each do |path|
-          case File.basename(path)
-          when *Puppet::ModuleTool::ARTIFACTS
-            next
+      def ignored_files
+        if @ignored_files
+          return @ignored_files
+        else
+          pmtignore = File.join(@path, '.pmtignore')
+          gitignore = File.join(@path, '.gitignore')
+
+          if File.file? pmtignore
+            @ignored_files = PathSpec.new File.read(pmtignore)
+          elsif File.file? gitignore
+            @ignored_files = PathSpec.new File.read(gitignore)
           else
-            FileUtils.cp_r path, build_path
+            @ignored_files = PathSpec.new
           end
         end
       end
 
-      def add_metadata
-        File.open(File.join(build_path, 'metadata.json'), 'w') do |f|
-          f.write(PSON.pretty_generate(metadata))
+      def copy_contents
+        symlinks = []
+        Find.find(File.join(@path)) do |path|
+          # because Find.find finds the path itself
+          if path == @path
+            next
+          end
+
+          # Needed because pathspec looks for a trailing slash in the path to
+          # determine if a path is a directory
+          path = path.to_s + '/' if File.directory? path
+
+          # if it matches, then prune it with fire
+          unless ignored_files.match_paths([path], @path).empty?
+            Find.prune
+          end
+
+          # don't copy all the Puppet ARTIFACTS
+          rel = Pathname.new(path).relative_path_from(Pathname.new(@path))
+          case rel.to_s
+          when *Puppet::ModuleTool::ARTIFACTS
+            Find.prune
+          end
+
+          # make dir tree, copy files, and add symlinks to the symlinks list
+          dest = "#{build_path}/#{rel.to_s}"
+          if File.directory? path
+            FileUtils.mkdir dest, :mode => File.stat(path).mode
+          elsif Puppet::FileSystem.symlink? path
+            symlinks << path
+          else
+            FileUtils.cp path, dest, :preserve => true
+          end
+        end
+
+        # send a message about each symlink and raise an error if they exist
+        unless symlinks.empty?
+          symlinks.each do |s|
+            s = Pathname.new s
+            mpath = Pathname.new @path
+            Puppet.warning "Symlinks in modules are unsupported. Please investigate symlink #{s.relative_path_from mpath} -> #{s.realpath.relative_path_from mpath}."
+          end
+
+          raise Puppet::ModuleTool::Errors::ModuleToolError, "Found symlinks. Symlinks in modules are not allowed, please remove them."
+        end
+      end
+
+      def write_json
+        metadata_path = File.join(build_path, 'metadata.json')
+
+        if metadata.to_hash.include? 'checksums'
+          Puppet.warning "A 'checksums' field was found in metadata.json. This field will be ignored and can safely be removed."
+        end
+
+        # TODO: This may necessarily change the order in which the metadata.json
+        # file is packaged from what was written by the user.  This is a
+        # regretable, but required for now.
+        File.open(metadata_path, 'w') do |f|
+          f.write(metadata.to_json)
+        end
+
+        File.open(File.join(build_path, 'checksums.json'), 'w') do |f|
+          f.write(PSON.pretty_generate(Checksums.new(build_path)))
         end
       end
 

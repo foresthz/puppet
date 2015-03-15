@@ -1,11 +1,11 @@
+require 'openssl'
+require 'cgi'
 require 'puppet/network/http/handler'
-require 'puppet/network/http/rack/httphandler'
+require 'puppet/util/ssl'
 
-class Puppet::Network::HTTP::RackREST < Puppet::Network::HTTP::RackHttpHandler
-
+class Puppet::Network::HTTP::RackREST
   include Puppet::Network::HTTP::Handler
 
-  HEADER_ACCEPT = 'HTTP_ACCEPT'.freeze
   ContentType = 'Content-Type'.freeze
 
   CHUNK_SIZE = 8192
@@ -28,7 +28,9 @@ class Puppet::Network::HTTP::RackREST < Puppet::Network::HTTP::RackHttpHandler
 
   def initialize(args={})
     super()
-    initialize_for_puppet(args)
+    register([Puppet::Network::HTTP::API.master_routes,
+              Puppet::Network::HTTP::API.ca_routes,
+              Puppet::Network::HTTP::API.not_found_upgrade])
   end
 
   def set_content_type(response, format)
@@ -46,14 +48,14 @@ class Puppet::Network::HTTP::RackREST < Puppet::Network::HTTP::RackHttpHandler
     end
   end
 
-  # Retrieve the accept header from the http request.
-  def accept_header(request)
-    request.env[HEADER_ACCEPT]
-  end
-
-  # Retrieve the accept header from the http request.
-  def content_type_header(request)
-    request.content_type
+  # Retrieve all headers from the http request, as a map.
+  def headers(request)
+    headers = request.env.select {|k,v| k.start_with? 'HTTP_'}.inject({}) do |m, (k,v)|
+      m[k.sub(/^HTTP_/, '').gsub('_','-').downcase] = v
+      m
+    end
+    headers['content-type'] = request.content_type
+    headers
   end
 
   # Return which HTTP verb was used in this request.
@@ -63,7 +65,15 @@ class Puppet::Network::HTTP::RackREST < Puppet::Network::HTTP::RackHttpHandler
 
   # Return the query params for this request.
   def params(request)
-    result = decode_params(request.params)
+    if request.post?
+      params = request.params
+    else
+      # rack doesn't support multi-valued query parameters,
+      # e.g. ignore, so parse them ourselves
+      params = CGI.parse(request.query_string)
+      convert_singular_arrays_to_value(params)
+    end
+    result = decode_params(params)
     result.merge(extract_client_info(request))
   end
 
@@ -73,21 +83,42 @@ class Puppet::Network::HTTP::RackREST < Puppet::Network::HTTP::RackHttpHandler
   end
 
   # return the request body
-  # request.body has some limitiations, so we need to concat it back
-  # into a regular string, which is something puppet can use.
   def body(request)
     request.body.read
+  end
+
+  def client_cert(request)
+    # This environment variable is set by mod_ssl, note that it
+    # requires the `+ExportCertData` option in the `SSLOptions` directive
+    cert = request.env['SSL_CLIENT_CERT']
+    # NOTE: The SSL_CLIENT_CERT environment variable will be the empty string
+    # when Puppet agent nodes have not yet obtained a signed certificate.
+    if cert.nil? || cert.empty?
+      nil
+    else
+      Puppet::SSL::Certificate.from_instance(OpenSSL::X509::Certificate.new(cert))
+    end
+  end
+
+  # Passenger freaks out if we finish handling the request without reading any
+  # part of the body, so make sure we have.
+  def cleanup(request)
+    request.body.read(1)
+    nil
   end
 
   def extract_client_info(request)
     result = {}
     result[:ip] = request.ip
 
-    # if we find SSL info in the headers, use them to get a hostname.
+    # if we find SSL info in the headers, use them to get a hostname from the CN.
     # try this with :ssl_client_header, which defaults should work for
     # Apache with StdEnvVars.
-    if dn = request.env[Puppet[:ssl_client_header]] and dn_matchdata = dn.match(/^.*?CN\s*=\s*(.*)/)
-      result[:node] = dn_matchdata[1].to_str
+    subj_str = request.env[Puppet[:ssl_client_header]]
+    subject = Puppet::Util::SSL.subject_from_dn(subj_str || "")
+
+    if cn = Puppet::Util::SSL.cn_from_subject(subject)
+      result[:node] = cn
       result[:authenticated] = (request.env[Puppet[:ssl_client_verify_header]] == 'SUCCESS')
     else
       result[:node] = resolve_node(result)
@@ -97,4 +128,11 @@ class Puppet::Network::HTTP::RackREST < Puppet::Network::HTTP::RackHttpHandler
     result
   end
 
+  def convert_singular_arrays_to_value(hash)
+    hash.each do |key, value|
+      if value.size == 1
+        hash[key] = value.first
+      end
+    end
+  end
 end

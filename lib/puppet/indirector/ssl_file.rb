@@ -69,26 +69,22 @@ class Puppet::Indirector::SslFile < Puppet::Indirector::Terminus
 
   # Remove our file.
   def destroy(request)
-    path = path(request.key)
-    return false unless FileTest.exist?(path)
+    path = Puppet::FileSystem.pathname(path(request.key))
+    return false unless Puppet::FileSystem.exist?(path)
 
     Puppet.notice "Removing file #{model} #{request.key} at '#{path}'"
     begin
-      File.unlink(path)
+      Puppet::FileSystem.unlink(path)
     rescue => detail
-      raise Puppet::Error, "Could not remove #{request.key}: #{detail}"
+      raise Puppet::Error, "Could not remove #{request.key}: #{detail}", detail.backtrace
     end
   end
 
   # Find the file on disk, returning an instance of the model.
   def find(request)
-    path = path(request.key)
+    filename = rename_files_with_uppercase(path(request.key))
 
-    return nil unless FileTest.exist?(path) or rename_files_with_uppercase(path)
-
-    result = model.new(request.key)
-    result.read(path)
-    result
+    filename ? create_model(request.key, filename) : nil
   end
 
   # Save our file to disk.
@@ -106,15 +102,19 @@ class Puppet::Indirector::SslFile < Puppet::Indirector::Terminus
   # an instance for every file in the directory.
   def search(request)
     dir = collection_directory
-    Dir.entries(dir).reject { |file| file !~ /\.pem$/ }.collect do |file|
-      name = file.sub(/\.pem$/, '')
-      result = model.new(name)
-      result.read(File.join(dir, file))
-      result
-    end
+    Dir.entries(dir).
+      select  { |file| file =~ /\.pem$/ }.
+      collect { |file| create_model(file.sub(/\.pem$/, ''), File.join(dir, file)) }.
+      compact
   end
 
   private
+
+  def create_model(name, path)
+    result = model.new(name)
+    result.read(path)
+    result
+  end
 
   # Demeterish pointers to class info.
   def collection_directory
@@ -135,8 +135,10 @@ class Puppet::Indirector::SslFile < Puppet::Indirector::Terminus
   # which we'll be EOL'ing at some point.  This method was added at 20080702
   # and should be removed at some point.
   def rename_files_with_uppercase(file)
+    return file if Puppet::FileSystem.exist?(file)
+
     dir, short = File.split(file)
-    return nil unless FileTest.exist?(dir)
+    return nil unless Puppet::FileSystem.exist?(dir)
 
     raise ArgumentError, "Tried to fix SSL files to a file containing uppercase" unless short.downcase == short
     real_file = Dir.entries(dir).reject { |f| f =~ /^\./ }.find do |other|
@@ -147,24 +149,24 @@ class Puppet::Indirector::SslFile < Puppet::Indirector::Terminus
 
     full_file = File.join(dir, real_file)
 
-    Puppet.notice "Fixing case in #{full_file}; renaming to #{file}"
+    Puppet.deprecation_warning "Automatic downcasing and renaming of ssl files is deprecated; please request the file using its correct case: #{full_file}"
     File.rename(full_file, file)
 
-    true
+    file
   end
 
   # Yield a filehandle set up appropriately, either with our settings doing
   # the work or opening a filehandle manually.
   def write(name, path)
     if ca?(name) and ca_location
-      Puppet.settings.write(self.class.ca_setting) { |f| yield f }
+      Puppet.settings.setting(self.class.ca_setting).open('w') { |f| yield f }
     elsif file_location
-      Puppet.settings.write(self.class.file_setting) { |f| yield f }
+      Puppet.settings.setting(self.class.file_setting).open('w') { |f| yield f }
     elsif setting = self.class.directory_setting
       begin
-        Puppet.settings.writesub(setting, path) { |f| yield f }
+        Puppet.settings.setting(setting).open_file(path, 'w') { |f| yield f }
       rescue => detail
-        raise Puppet::Error, "Could not write #{path} to #{setting}: #{detail}"
+        raise Puppet::Error, "Could not write #{path} to #{setting}: #{detail}", detail.backtrace
       end
     else
       raise Puppet::DevError, "You must provide a setting to determine where the files are stored"

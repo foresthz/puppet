@@ -18,6 +18,7 @@ module Puppet::Network::Resolver
       when :ca     then service = '_x-puppet-ca'
       when :report then service = '_x-puppet-report'
       when :file   then service = '_x-puppet-fileserver'
+      else              service = "_x-puppet-#{service_name.to_s}"
     end
     srv_record = "#{service}._tcp.#{domain}"
 
@@ -30,8 +31,8 @@ module Puppet::Network::Resolver
       # for the specific service.
       each_srv_record(domain, :puppet, &block)
     else
-      each_priority(records) do |priority, records|
-        while next_rr = records.delete(find_weighted_server(records))
+      each_priority(records) do |priority, recs|
+        while next_rr = recs.delete(find_weighted_server(recs))
           Puppet.debug "Yielding next server of #{next_rr.target.to_s}:#{next_rr.port}"
           yield next_rr.target.to_s, next_rr.port
         end

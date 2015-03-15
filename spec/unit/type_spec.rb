@@ -1,83 +1,105 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
+require 'puppet_spec/compiler'
 
-
-describe Puppet::Type do
+describe Puppet::Type, :unless => Puppet.features.microsoft_windows? do
   include PuppetSpec::Files
+  include PuppetSpec::Compiler
 
-  pending("porting to Windows", :if => Puppet.features.microsoft_windows?) do
   it "should be Comparable" do
     a = Puppet::Type.type(:notify).new(:name => "a")
     b = Puppet::Type.type(:notify).new(:name => "b")
     c = Puppet::Type.type(:notify).new(:name => "c")
 
     [[a, b, c], [a, c, b], [b, a, c], [b, c, a], [c, a, b], [c, b, a]].each do |this|
-      this.sort.should == [a, b, c]
+      expect(this.sort).to eq([a, b, c])
     end
 
-    a.should be < b
-    a.should be < c
-    b.should be > a
-    b.should be < c
-    c.should be > a
-    c.should be > b
+    expect(a).to be < b
+    expect(a).to be < c
+    expect(b).to be > a
+    expect(b).to be < c
+    expect(c).to be > a
+    expect(c).to be > b
 
-    [a, b, c].each {|x| a.should be <= x }
-    [a, b, c].each {|x| c.should be >= x }
+    [a, b, c].each {|x| expect(a).to be <= x }
+    [a, b, c].each {|x| expect(c).to be >= x }
 
-    b.should be_between(a, c)
+    expect(b).to be_between(a, c)
   end
 
   it "should consider a parameter to be valid if it is a valid parameter" do
-    Puppet::Type.type(:mount).should be_valid_parameter(:path)
+    expect(Puppet::Type.type(:mount)).to be_valid_parameter(:name)
   end
 
   it "should consider a parameter to be valid if it is a valid property" do
-    Puppet::Type.type(:mount).should be_valid_parameter(:fstype)
+    expect(Puppet::Type.type(:mount)).to be_valid_parameter(:fstype)
   end
 
   it "should consider a parameter to be valid if it is a valid metaparam" do
-    Puppet::Type.type(:mount).should be_valid_parameter(:noop)
+    expect(Puppet::Type.type(:mount)).to be_valid_parameter(:noop)
   end
 
   it "should be able to retrieve a property by name" do
     resource = Puppet::Type.type(:mount).new(:name => "foo", :fstype => "bar", :pass => 1, :ensure => :present)
-    resource.property(:fstype).must be_instance_of(Puppet::Type.type(:mount).attrclass(:fstype))
+    expect(resource.property(:fstype)).to be_instance_of(Puppet::Type.type(:mount).attrclass(:fstype))
   end
 
   it "should be able to retrieve a parameter by name" do
     resource = Puppet::Type.type(:mount).new(:name => "foo", :fstype => "bar", :pass => 1, :ensure => :present)
-    resource.parameter(:name).must be_instance_of(Puppet::Type.type(:mount).attrclass(:name))
+    expect(resource.parameter(:name)).to be_instance_of(Puppet::Type.type(:mount).attrclass(:name))
   end
 
   it "should be able to retrieve a property by name using the :parameter method" do
     resource = Puppet::Type.type(:mount).new(:name => "foo", :fstype => "bar", :pass => 1, :ensure => :present)
-    resource.parameter(:fstype).must be_instance_of(Puppet::Type.type(:mount).attrclass(:fstype))
+    expect(resource.parameter(:fstype)).to be_instance_of(Puppet::Type.type(:mount).attrclass(:fstype))
   end
 
   it "should be able to retrieve all set properties" do
     resource = Puppet::Type.type(:mount).new(:name => "foo", :fstype => "bar", :pass => 1, :ensure => :present)
     props = resource.properties
-    props.should_not be_include(nil)
+    expect(props).not_to be_include(nil)
     [:fstype, :ensure, :pass].each do |name|
-      props.should be_include(resource.parameter(name))
+      expect(props).to be_include(resource.parameter(name))
     end
   end
 
+  it "can retrieve all set parameters" do
+    resource = Puppet::Type.type(:mount).new(:name => "foo", :fstype => "bar", :pass => 1, :ensure => :present, :tag => 'foo')
+    params = resource.parameters_with_value
+    [:name, :provider, :ensure, :fstype, :pass, :dump, :target, :loglevel, :tag].each do |name|
+      expect(params).to be_include(resource.parameter(name))
+    end
+  end
+
+  it "can not return any `nil` values when retrieving all set parameters" do
+    resource = Puppet::Type.type(:mount).new(:name => "foo", :fstype => "bar", :pass => 1, :ensure => :present, :tag => 'foo')
+    params = resource.parameters_with_value
+    expect(params).not_to be_include(nil)
+  end
+
+  it "can return an iterator for all set parameters" do
+    resource = Puppet::Type.type(:notify).new(:name=>'foo',:message=>'bar',:tag=>'baz',:require=> "File['foo']")
+    params = [:name, :message, :withpath, :loglevel, :tag, :require]
+    resource.eachparameter { |param|
+      expect(params).to be_include(param.to_s.to_sym)
+    }
+  end
+
   it "should have a method for setting default values for resources" do
-    Puppet::Type.type(:mount).new(:name => "foo").should respond_to(:set_default)
+    expect(Puppet::Type.type(:mount).new(:name => "foo")).to respond_to(:set_default)
   end
 
   it "should do nothing for attributes that have no defaults and no specified value" do
-    Puppet::Type.type(:mount).new(:name => "foo").parameter(:noop).should be_nil
+    expect(Puppet::Type.type(:mount).new(:name => "foo").parameter(:noop)).to be_nil
   end
 
   it "should have a method for adding tags" do
-    Puppet::Type.type(:mount).new(:name => "foo").should respond_to(:tags)
+    expect(Puppet::Type.type(:mount).new(:name => "foo")).to respond_to(:tags)
   end
 
   it "should use the tagging module" do
-    Puppet::Type.type(:mount).ancestors.should be_include(Puppet::Util::Tagging)
+    expect(Puppet::Type.type(:mount).ancestors).to be_include(Puppet::Util::Tagging)
   end
 
   it "should delegate to the tagging module when tags are added" do
@@ -99,53 +121,88 @@ describe Puppet::Type do
   end
 
   it "should have a method to know if the resource is exported" do
-    Puppet::Type.type(:mount).new(:name => "foo").should respond_to(:exported?)
+    expect(Puppet::Type.type(:mount).new(:name => "foo")).to respond_to(:exported?)
   end
 
   it "should have a method to know if the resource is virtual" do
-    Puppet::Type.type(:mount).new(:name => "foo").should respond_to(:virtual?)
-  end
-
-  it "should consider its version to be its catalog version" do
-    resource = Puppet::Type.type(:mount).new(:name => "foo")
-    catalog = Puppet::Resource::Catalog.new
-    catalog.version = 50
-    catalog.add_resource resource
-
-    resource.version.should == 50
+    expect(Puppet::Type.type(:mount).new(:name => "foo")).to respond_to(:virtual?)
   end
 
   it "should consider its version to be zero if it has no catalog" do
-    Puppet::Type.type(:mount).new(:name => "foo").version.should == 0
+    expect(Puppet::Type.type(:mount).new(:name => "foo").version).to eq(0)
   end
 
-  it "should provide source_descriptors" do
-    resource = Puppet::Type.type(:mount).new(:name => "foo")
-    catalog = Puppet::Resource::Catalog.new
-    catalog.version = 50
-    catalog.add_resource resource
+  it "reports the correct path even after path is used during setup of the type" do
+    Puppet::Type.newtype(:testing) do
+      newparam(:name) do
+        isnamevar
+        validate do |value|
+          path # forces the computation of the path
+        end
+      end
+    end
 
-    resource.source_descriptors.should == {:tags=>["mount", "foo"], :path=>"/Mount[foo]"}
+    ral = compile_to_ral(<<-MANIFEST)
+      class something {
+        testing { something: }
+      }
+      include something
+    MANIFEST
+
+    expect(ral.resource("Testing[something]").path).to eq("/Stage[main]/Something/Testing[something]")
+  end
+
+  context "alias metaparam" do
+    it "creates a new name that can be used for resource references" do
+      ral = compile_to_ral(<<-MANIFEST)
+        notify { a: alias => c }
+      MANIFEST
+
+      expect(ral.resource("Notify[a]")).to eq(ral.resource("Notify[c]"))
+    end
+  end
+
+  context "resource attributes" do
+    let(:resource) {
+      resource = Puppet::Type.type(:mount).new(:name => "foo")
+      catalog = Puppet::Resource::Catalog.new
+      catalog.version = 50
+      catalog.add_resource resource
+      resource
+    }
+
+    it "should consider its version to be its catalog version" do
+      expect(resource.version).to eq(50)
+    end
+
+    it "should have tags" do
+      expect(resource).to be_tagged("mount")
+      expect(resource).to be_tagged("foo")
+    end
+
+    it "should have a path" do
+      expect(resource.path).to eq("/Mount[foo]")
+    end
   end
 
   it "should consider its type to be the name of its class" do
-    Puppet::Type.type(:mount).new(:name => "foo").type.should == :mount
+    expect(Puppet::Type.type(:mount).new(:name => "foo").type).to eq(:mount)
   end
 
   it "should use any provided noop value" do
-    Puppet::Type.type(:mount).new(:name => "foo", :noop => true).must be_noop
+    expect(Puppet::Type.type(:mount).new(:name => "foo", :noop => true)).to be_noop
   end
 
   it "should use the global noop value if none is provided" do
     Puppet[:noop] = true
-    Puppet::Type.type(:mount).new(:name => "foo").must be_noop
+    expect(Puppet::Type.type(:mount).new(:name => "foo")).to be_noop
   end
 
   it "should not be noop if in a non-host_config catalog" do
     resource = Puppet::Type.type(:mount).new(:name => "foo")
     catalog = Puppet::Resource::Catalog.new
     catalog.add_resource resource
-    resource.should_not be_noop
+    expect(resource).not_to be_noop
   end
 
   describe "when creating an event" do
@@ -154,23 +211,29 @@ describe Puppet::Type do
     end
 
     it "should have the resource's reference as the resource" do
-      @resource.event.resource.should == "Mount[foo]"
+      expect(@resource.event.resource).to eq("Mount[foo]")
     end
 
     it "should have the resource's log level as the default log level" do
       @resource[:loglevel] = :warning
-      @resource.event.default_log_level.should == :warning
+      expect(@resource.event.default_log_level).to eq(:warning)
     end
 
-    {:file => "/my/file", :line => 50, :tags => %{foo bar}}.each do |attr, value|
+    {:file => "/my/file", :line => 50}.each do |attr, value|
       it "should set the #{attr}" do
         @resource.stubs(attr).returns value
-        @resource.event.send(attr).should == value
+        expect(@resource.event.send(attr)).to eq(value)
       end
     end
 
+    it "should set the tags" do
+      @resource.tag("abc", "def")
+      expect(@resource.event).to be_tagged("abc")
+      expect(@resource.event).to be_tagged("def")
+    end
+
     it "should allow specification of event attributes" do
-      @resource.event(:status => "noop").status.should == "noop"
+      expect(@resource.event(:status => "noop").status).to eq("noop")
     end
   end
 
@@ -189,21 +252,21 @@ describe Puppet::Type do
 
     describe "when determining if instances of the type are managed" do
       it "should not consider audit only resources to be managed" do
-        @type.new(:name => "foo", :audit => 'all').managed?.should be_false
+        expect(@type.new(:name => "foo", :audit => 'all').managed?).to be_falsey
       end
 
       it "should not consider resources with only parameters to be managed" do
-        @type.new(:name => "foo", :foo => 'did someone say food?').managed?.should be_false
+        expect(@type.new(:name => "foo", :foo => 'did someone say food?').managed?).to be_falsey
       end
 
       it "should consider resources with any properties set to be managed" do
-        @type.new(:name => "foo", :bar => 'Let us all go there').managed?.should be_true
+        expect(@type.new(:name => "foo", :bar => 'Let us all go there').managed?).to be_truthy
       end
     end
 
     it "should have documentation for the 'provider' parameter if there are providers" do
       @type.provide(:test_provider)
-      @type.paramdoc(:provider).should =~ /`provider_test_type`[\s\r]+resource/
+      expect(@type.paramdoc(:provider)).to match(/`provider_test_type`[\s\r]+resource/)
     end
 
     it "should not have documentation for the 'provider' parameter if there are no providers" do
@@ -213,21 +276,21 @@ describe Puppet::Type do
     it "should create a subclass of Puppet::Provider for the provider" do
       provider = @type.provide(:test_provider)
 
-      provider.ancestors.should include(Puppet::Provider)
+      expect(provider.ancestors).to include(Puppet::Provider)
     end
 
     it "should use a parent class if specified" do
       parent_provider = @type.provide(:parent_provider)
       child_provider  = @type.provide(:child_provider, :parent => parent_provider)
 
-      child_provider.ancestors.should include(parent_provider)
+      expect(child_provider.ancestors).to include(parent_provider)
     end
 
     it "should use a parent class if specified by name" do
       parent_provider = @type.provide(:parent_provider)
       child_provider  = @type.provide(:child_provider, :parent => :parent_provider)
 
-      child_provider.ancestors.should include(parent_provider)
+      expect(child_provider.ancestors).to include(parent_provider)
     end
 
     it "should raise an error when the parent class can't be found" do
@@ -239,20 +302,20 @@ describe Puppet::Type do
     it "should ensure its type has a 'provider' parameter" do
       @type.provide(:test_provider)
 
-      @type.parameters.should include(:provider)
+      expect(@type.parameters).to include(:provider)
     end
 
     it "should remove a previously registered provider with the same name" do
       old_provider = @type.provide(:test_provider)
       new_provider = @type.provide(:test_provider)
 
-      old_provider.should_not equal(new_provider)
+      expect(old_provider).not_to equal(new_provider)
     end
 
     it "should register itself as a provider for the type" do
       provider = @type.provide(:test_provider)
 
-      provider.should == @type.provider(:test_provider)
+      expect(provider).to eq(@type.provider(:test_provider))
     end
 
     it "should create a provider when a provider with the same name previously failed" do
@@ -262,8 +325,28 @@ describe Puppet::Type do
 
       provider = @type.provide(:test_provider)
 
-      provider.ancestors.should include(Puppet::Provider)
-      provider.should == @type.provider(:test_provider)
+      expect(provider.ancestors).to include(Puppet::Provider)
+      expect(provider).to eq(@type.provider(:test_provider))
+    end
+
+    describe "with a parent class from another type" do
+      before :each do
+        @parent_type = Puppet::Type.newtype(:provider_parent_type) do
+          newparam(:name) { isnamevar }
+        end
+        @parent_provider = @parent_type.provide(:parent_provider)
+      end
+
+      it "should be created successfully" do
+        child_provider = @type.provide(:child_provider, :parent => @parent_provider)
+        expect(child_provider.ancestors).to include(@parent_provider)
+      end
+
+      it "should be registered as a provider of the child type" do
+        child_provider = @type.provide(:child_provider, :parent => @parent_provider)
+        expect(@type.providers).to include(:child_provider)
+        expect(@parent_type.providers).not_to include(:child_provider)
+      end
     end
   end
 
@@ -280,7 +363,89 @@ describe Puppet::Type do
       basic.stubs(:specificity).returns 1
       greater.stubs(:specificity).returns 2
 
-      type.defaultprovider.should equal(greater)
+      expect(type.defaultprovider).to equal(greater)
+    end
+  end
+
+  context "autorelations" do
+    before :each do
+      type = Puppet::Type.newtype(:autorelation_one) do
+        newparam(:name) { isnamevar }
+      end
+    end
+
+    describe "when building autorelations" do
+      it "should be able to autorequire resources" do
+        type = Puppet::Type.newtype(:autorelation_two) do
+          newparam(:name) { isnamevar }
+          autorequire(:autorelation_one) { ['foo'] }
+        end
+
+        relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
+          autorelation_one { 'foo': }
+          autorelation_two { 'bar': }
+        MANIFEST
+
+        src = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_one[foo]' }.first
+        dst = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_two[bar]' }.first
+
+        expect(relationship_graph.edge?(src,dst)).to be_truthy
+        expect(relationship_graph.edges_between(src,dst).first.event).to eq(:NONE)
+      end
+
+      it "should be able to autosubscribe resources" do
+        type = Puppet::Type.newtype(:autorelation_two) do
+          newparam(:name) { isnamevar }
+          autosubscribe(:autorelation_one) { ['foo'] }
+        end
+
+        relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
+          autorelation_one { 'foo': }
+          autorelation_two { 'bar': }
+        MANIFEST
+
+        src = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_one[foo]' }.first
+        dst = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_two[bar]' }.first
+
+        expect(relationship_graph.edge?(src,dst)).to be_truthy
+        expect(relationship_graph.edges_between(src,dst).first.event).to eq(:ALL_EVENTS)
+      end
+
+      it "should be able to autobefore resources" do
+        type = Puppet::Type.newtype(:autorelation_two) do
+          newparam(:name) { isnamevar }
+          autobefore(:autorelation_one) { ['foo'] }
+        end
+
+        relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
+          autorelation_one { 'foo': }
+          autorelation_two { 'bar': }
+        MANIFEST
+
+        src = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_two[bar]' }.first
+        dst = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_one[foo]' }.first
+
+        expect(relationship_graph.edge?(src,dst)).to be_truthy
+        expect(relationship_graph.edges_between(src,dst).first.event).to eq(:NONE)
+      end
+
+      it "should be able to autonotify resources" do
+        type = Puppet::Type.newtype(:autorelation_two) do
+          newparam(:name) { isnamevar }
+          autonotify(:autorelation_one) { ['foo'] }
+        end
+
+        relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
+          autorelation_one { 'foo': }
+          autorelation_two { 'bar': }
+        MANIFEST
+
+        src = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_two[bar]' }.first
+        dst = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_one[foo]' }.first
+
+        expect(relationship_graph.edge?(src,dst)).to be_truthy
+        expect(relationship_graph.edges_between(src,dst).first.event).to eq(:ALL_EVENTS)
+      end
     end
   end
 
@@ -288,12 +453,12 @@ describe Puppet::Type do
     describe "and passed a Puppet::Resource instance" do
       it "should set its title to the title of the resource if the resource type is equal to the current type" do
         resource = Puppet::Resource.new(:mount, "/foo", :parameters => {:name => "/other"})
-        Puppet::Type.type(:mount).new(resource).title.should == "/foo"
+        expect(Puppet::Type.type(:mount).new(resource).title).to eq("/foo")
       end
 
       it "should set its title to the resource reference if the resource type is not equal to the current type" do
         resource = Puppet::Resource.new(:user, "foo")
-        Puppet::Type.type(:mount).new(resource).title.should == "User[foo]"
+        expect(Puppet::Type.type(:mount).new(resource).title).to eq("User[foo]")
       end
 
       [:line, :file, :catalog, :exported, :virtual].each do |param|
@@ -301,7 +466,7 @@ describe Puppet::Type do
           resource = Puppet::Resource.new(:mount, "/foo")
           resource.send(param.to_s + "=", "foo")
           resource.send(param.to_s + "=", "foo")
-          Puppet::Type.type(:mount).new(resource).send(param).should == "foo"
+          expect(Puppet::Type.type(:mount).new(resource).send(param)).to eq("foo")
         end
       end
 
@@ -309,70 +474,86 @@ describe Puppet::Type do
         resource = Puppet::Resource.new(:mount, "/foo")
         resource.tag "one", "two"
         tags = Puppet::Type.type(:mount).new(resource).tags
-        tags.should be_include("one")
-        tags.should be_include("two")
+        expect(tags).to be_include("one")
+        expect(tags).to be_include("two")
       end
 
       it "should copy the resource's parameters as its own" do
-        resource = Puppet::Resource.new(:mount, "/foo", :parameters => {:atboot => true, :fstype => "boo"})
+        resource = Puppet::Resource.new(:mount, "/foo", :parameters => {:atboot => :yes, :fstype => "boo"})
         params = Puppet::Type.type(:mount).new(resource).to_hash
-        params[:fstype].should == "boo"
-        params[:atboot].should == true
+        expect(params[:fstype]).to eq("boo")
+        expect(params[:atboot]).to eq(:yes)
       end
     end
 
     describe "and passed a Hash" do
       it "should extract the title from the hash" do
-        Puppet::Type.type(:mount).new(:title => "/yay").title.should == "/yay"
+        expect(Puppet::Type.type(:mount).new(:title => "/yay").title).to eq("/yay")
       end
 
       it "should work when hash keys are provided as strings" do
-        Puppet::Type.type(:mount).new("title" => "/yay").title.should == "/yay"
+        expect(Puppet::Type.type(:mount).new("title" => "/yay").title).to eq("/yay")
       end
 
       it "should work when hash keys are provided as symbols" do
-        Puppet::Type.type(:mount).new(:title => "/yay").title.should == "/yay"
+        expect(Puppet::Type.type(:mount).new(:title => "/yay").title).to eq("/yay")
       end
 
       it "should use the name from the hash as the title if no explicit title is provided" do
-        Puppet::Type.type(:mount).new(:name => "/yay").title.should == "/yay"
+        expect(Puppet::Type.type(:mount).new(:name => "/yay").title).to eq("/yay")
       end
 
       it "should use the Resource Type's namevar to determine how to find the name in the hash" do
         yay = make_absolute('/yay')
-        Puppet::Type.type(:file).new(:path => yay).title.should == yay
+        expect(Puppet::Type.type(:file).new(:path => yay).title).to eq(yay)
       end
 
       [:catalog].each do |param|
         it "should extract '#{param}' from the hash if present" do
-          Puppet::Type.type(:mount).new(:name => "/yay", param => "foo").send(param).should == "foo"
+          expect(Puppet::Type.type(:mount).new(:name => "/yay", param => "foo").send(param)).to eq("foo")
         end
       end
 
       it "should use any remaining hash keys as its parameters" do
-        resource = Puppet::Type.type(:mount).new(:title => "/foo", :catalog => "foo", :atboot => true, :fstype => "boo")
-        resource[:fstype].must == "boo"
-        resource[:atboot].must == true
+        resource = Puppet::Type.type(:mount).new(:title => "/foo", :catalog => "foo", :atboot => :yes, :fstype => "boo")
+        expect(resource[:fstype]).to eq("boo")
+        expect(resource[:atboot]).to eq(:yes)
       end
     end
 
     it "should fail if any invalid attributes have been provided" do
-      lambda { Puppet::Type.type(:mount).new(:title => "/foo", :nosuchattr => "whatever") }.should raise_error(Puppet::Error)
+      expect { Puppet::Type.type(:mount).new(:title => "/foo", :nosuchattr => "whatever") }.to raise_error(Puppet::Error, /Invalid parameter/)
+    end
+
+    context "when an attribute fails validation" do
+      it "should fail with Puppet::ResourceError when PuppetError raised" do
+        expect { Puppet::Type.type(:file).new(:title => "/foo", :source => "unknown:///") }.to raise_error(Puppet::ResourceError, /Parameter source failed on File\[.*foo\]/)
+      end
+
+      it "should fail with Puppet::ResourceError when ArgumentError raised" do
+        expect { Puppet::Type.type(:file).new(:title => "/foo", :mode => "abcdef") }.to raise_error(Puppet::ResourceError, /Parameter mode failed on File\[.*foo\]/)
+      end
+
+      it "should include the file/line in the error" do
+        Puppet::Type.type(:file).any_instance.stubs(:file).returns("example.pp")
+        Puppet::Type.type(:file).any_instance.stubs(:line).returns(42)
+        expect { Puppet::Type.type(:file).new(:title => "/foo", :source => "unknown:///") }.to raise_error(Puppet::ResourceError, /example.pp:42/)
+      end
     end
 
     it "should set its name to the resource's title if the resource does not have a :name or namevar parameter set" do
       resource = Puppet::Resource.new(:mount, "/foo")
 
-      Puppet::Type.type(:mount).new(resource).name.should == "/foo"
+      expect(Puppet::Type.type(:mount).new(resource).name).to eq("/foo")
     end
 
     it "should fail if no title, name, or namevar are provided" do
-      lambda { Puppet::Type.type(:file).new(:atboot => true) }.should raise_error(Puppet::Error)
+      expect { Puppet::Type.type(:mount).new(:atboot => :yes) }.to raise_error(Puppet::Error)
     end
 
     it "should set the attributes in the order returned by the class's :allattrs method" do
       Puppet::Type.type(:mount).stubs(:allattrs).returns([:name, :atboot, :noop])
-      resource = Puppet::Resource.new(:mount, "/foo", :parameters => {:name => "myname", :atboot => "myboot", :noop => "whatever"})
+      resource = Puppet::Resource.new(:mount, "/foo", :parameters => {:name => "myname", :atboot => :yes, :noop => "whatever"})
 
       set = []
 
@@ -383,13 +564,13 @@ describe Puppet::Type do
 
       Puppet::Type.type(:mount).new(resource)
 
-      set[-1].should == :noop
-      set[-2].should == :atboot
+      expect(set[-1]).to eq(:noop)
+      expect(set[-2]).to eq(:atboot)
     end
 
     it "should always set the name and then default provider before anything else" do
       Puppet::Type.type(:mount).stubs(:allattrs).returns([:provider, :name, :atboot])
-      resource = Puppet::Resource.new(:mount, "/foo", :parameters => {:name => "myname", :atboot => "myboot"})
+      resource = Puppet::Resource.new(:mount, "/foo", :parameters => {:name => "myname", :atboot => :yes})
 
       set = []
 
@@ -399,8 +580,8 @@ describe Puppet::Type do
       end.returns(stub_everything("a property"))
 
       Puppet::Type.type(:mount).new(resource)
-      set[0].should == :name
-      set[1].should == :provider
+      expect(set[0]).to eq(:name)
+      expect(set[1]).to eq(:provider)
     end
 
     # This one is really hard to test :/
@@ -410,20 +591,71 @@ describe Puppet::Type do
 
       Puppet::Type.type(:service).new :name => "whatever"
 
-      defaults[0].should == :provider
+      expect(defaults[0]).to eq(:provider)
     end
 
     it "should retain a copy of the originally provided parameters" do
-      Puppet::Type.type(:mount).new(:name => "foo", :atboot => true, :noop => false).original_parameters.should == {:atboot => true, :noop => false}
+      expect(Puppet::Type.type(:mount).new(:name => "foo", :atboot => :yes, :noop => false).original_parameters).to eq({:atboot => :yes, :noop => false})
     end
 
     it "should delete the name via the namevar from the originally provided parameters" do
-      Puppet::Type.type(:file).new(:name => make_absolute('/foo')).original_parameters[:path].should be_nil
+      expect(Puppet::Type.type(:file).new(:name => make_absolute('/foo')).original_parameters[:path]).to be_nil
+    end
+
+    context "when validating the resource" do
+      it "should call the type's validate method if present" do
+        Puppet::Type.type(:file).any_instance.expects(:validate)
+        Puppet::Type.type(:file).new(:name => make_absolute('/foo'))
+      end
+
+      it "should raise Puppet::ResourceError with resource name when Puppet::Error raised" do
+        expect do
+          Puppet::Type.type(:file).new(
+            :name => make_absolute('/foo'),
+            :source => "puppet:///",
+            :content => "foo"
+          )
+        end.to raise_error(Puppet::ResourceError, /Validation of File\[.*foo.*\]/)
+      end
+
+      it "should raise Puppet::ResourceError with manifest file and line on failure" do
+        Puppet::Type.type(:file).any_instance.stubs(:file).returns("example.pp")
+        Puppet::Type.type(:file).any_instance.stubs(:line).returns(42)
+        expect do
+          Puppet::Type.type(:file).new(
+            :name => make_absolute('/foo'),
+            :source => "puppet:///",
+            :content => "foo"
+          )
+        end.to raise_error(Puppet::ResourceError, /Validation.*example.pp:42/)
+      end
+    end
+  end
+
+  describe "when #finish is called on a type" do
+    let(:post_hook_type) do
+      Puppet::Type.newtype(:finish_test) do
+        newparam(:name) { isnamevar }
+
+        newparam(:post) do
+          def post_compile
+            raise "post_compile hook ran"
+          end
+        end
+      end
+    end
+
+    let(:post_hook_resource) do
+      post_hook_type.new(:name => 'foo',:post => 'fake_value')
+    end
+
+    it "should call #post_compile on parameters that implement it" do
+      expect { post_hook_resource.finish }.to raise_error(RuntimeError, "post_compile hook ran")
     end
   end
 
   it "should have a class method for converting a hash into a Puppet::Resource instance" do
-    Puppet::Type.type(:mount).must respond_to(:hash2resource)
+    expect(Puppet::Type.type(:mount)).to respond_to(:hash2resource)
   end
 
   describe "when converting a hash to a Puppet::Resource instance" do
@@ -432,42 +664,42 @@ describe Puppet::Type do
     end
 
     it "should treat a :title key as the title of the resource" do
-      @type.hash2resource(:name => "/foo", :title => "foo").title.should == "foo"
+      expect(@type.hash2resource(:name => "/foo", :title => "foo").title).to eq("foo")
     end
 
     it "should use the name from the hash as the title if no explicit title is provided" do
-      @type.hash2resource(:name => "foo").title.should == "foo"
+      expect(@type.hash2resource(:name => "foo").title).to eq("foo")
     end
 
     it "should use the Resource Type's namevar to determine how to find the name in the hash" do
       @type.stubs(:key_attributes).returns([ :myname ])
 
-      @type.hash2resource(:myname => "foo").title.should == "foo"
+      expect(@type.hash2resource(:myname => "foo").title).to eq("foo")
     end
 
     [:catalog].each do |attr|
       it "should use any provided #{attr}" do
-        @type.hash2resource(:name => "foo", attr => "eh").send(attr).should == "eh"
+        expect(@type.hash2resource(:name => "foo", attr => "eh").send(attr)).to eq("eh")
       end
     end
 
     it "should set all provided parameters on the resource" do
-      @type.hash2resource(:name => "foo", :fstype => "boo", :boot => "fee").to_hash.should == {:name => "foo", :fstype => "boo", :boot => "fee"}
+      expect(@type.hash2resource(:name => "foo", :fstype => "boo", :boot => "fee").to_hash).to eq({:name => "foo", :fstype => "boo", :boot => "fee"})
     end
 
     it "should not set the title as a parameter on the resource" do
-      @type.hash2resource(:name => "foo", :title => "eh")[:title].should be_nil
+      expect(@type.hash2resource(:name => "foo", :title => "eh")[:title]).to be_nil
     end
 
     it "should not set the catalog as a parameter on the resource" do
-      @type.hash2resource(:name => "foo", :catalog => "eh")[:catalog].should be_nil
+      expect(@type.hash2resource(:name => "foo", :catalog => "eh")[:catalog]).to be_nil
     end
 
     it "should treat hash keys equivalently whether provided as strings or symbols" do
       resource = @type.hash2resource("name" => "foo", "title" => "eh", "fstype" => "boo")
-      resource.title.should == "eh"
-      resource[:name].should == "foo"
-      resource[:fstype].should == "boo"
+      expect(resource.title).to eq("eh")
+      expect(resource[:name]).to eq("foo")
+      expect(resource[:fstype]).to eq("boo")
     end
   end
 
@@ -480,25 +712,25 @@ describe Puppet::Type do
     it "should fail if its provider is unsuitable" do
       @resource = Puppet::Type.type(:mount).new(:name => "foo", :fstype => "bar", :pass => 1, :ensure => :present)
       @resource.provider.class.expects(:suitable?).returns false
-      lambda { @resource.retrieve_resource }.should raise_error(Puppet::Error)
+      expect { @resource.retrieve_resource }.to raise_error(Puppet::Error)
     end
 
     it "should return a Puppet::Resource instance with its type and title set appropriately" do
       result = @resource.retrieve_resource
-      result.should be_instance_of(Puppet::Resource)
-      result.type.should == "Mount"
-      result.title.should == "foo"
+      expect(result).to be_instance_of(Puppet::Resource)
+      expect(result.type).to eq("Mount")
+      expect(result.title).to eq("foo")
     end
 
     it "should set the name of the returned resource if its own name and title differ" do
-      @resource[:name] = "my name"
+      @resource[:name] = "myname"
       @resource.title = "other name"
-      @resource.retrieve_resource[:name].should == "my name"
+      expect(@resource.retrieve_resource[:name]).to eq("myname")
     end
 
     it "should provide a value for all set properties" do
       values = @resource.retrieve_resource
-      [:ensure, :fstype, :pass].each { |property| values[property].should_not be_nil }
+      [:ensure, :fstype, :pass].each { |property| expect(values[property]).not_to be_nil }
     end
 
     it "should provide a value for 'ensure' even if no desired value is provided" do
@@ -508,7 +740,7 @@ describe Puppet::Type do
     it "should not call retrieve on non-ensure properties if the resource is absent and should consider the property absent" do
       @resource.property(:ensure).expects(:retrieve).returns :absent
       @resource.property(:fstype).expects(:retrieve).never
-      @resource.retrieve_resource[:fstype].should == :absent
+      expect(@resource.retrieve_resource[:fstype]).to eq(:absent)
     end
 
     it "should include the result of retrieving each property's current value if the resource is present" do
@@ -529,18 +761,18 @@ describe Puppet::Type do
       type_resource.tags = %w{bar baz}
 
       # If it's not a property it's a parameter
-      type_resource.parameters[:remounts].should_not be_a(Puppet::Property)
-      type_resource.parameters[:fstype].is_a?(Puppet::Property).should be_true
+      expect(type_resource.parameters[:remounts]).not_to be_a(Puppet::Property)
+      expect(type_resource.parameters[:fstype].is_a?(Puppet::Property)).to be_truthy
 
       type_resource.property(:ensure).expects(:retrieve).returns :present
       type_resource.property(:fstype).expects(:retrieve).returns 15
 
       resource = type_resource.to_resource
 
-      resource.should be_a Puppet::Resource
-      resource[:fstype].should   == 15
-      resource[:remounts].should == :true
-      resource.tags.should       =~ %w{foo bar baz mount}
+      expect(resource).to be_a Puppet::Resource
+      expect(resource[:fstype]).to   eq(15)
+      expect(resource[:remounts]).to eq(:true)
+      expect(resource.tags).to eq(Puppet::Util::TagSet.new(%w{foo bar baz mount}))
     end
   end
 
@@ -553,15 +785,15 @@ describe Puppet::Type do
 
       it "should have a default pattern for when there's one namevar" do
         patterns = @type_class.title_patterns
-        patterns.length.should == 1
-        patterns[0].length.should == 2
+        expect(patterns.length).to eq(1)
+        expect(patterns[0].length).to eq(2)
       end
 
       it "should have a regexp that captures the entire string" do
         patterns = @type_class.title_patterns
         string = "abc\n\tdef"
         patterns[0][0] =~ string
-        $1.should == "abc\n\tdef"
+        expect($1).to eq("abc\n\tdef")
       end
     end
   end
@@ -581,11 +813,11 @@ describe Puppet::Type do
     end
 
     it "should have no parent if there is no in edge" do
-      @container.parent.should be_nil
+      expect(@container.parent).to be_nil
     end
 
     it "should set its parent to its in edge" do
-      @one.parent.ref.should == @container.ref
+      expect(@one.parent.ref).to eq(@container.ref)
     end
 
     after do
@@ -594,7 +826,7 @@ describe Puppet::Type do
   end
 
   it "should have a 'stage' metaparam" do
-    Puppet::Type.metaparamclass(:stage).should be_instance_of(Class)
+    expect(Puppet::Type.metaparamclass(:stage)).to be_instance_of(Class)
   end
 
   describe "#suitable?" do
@@ -604,31 +836,28 @@ describe Puppet::Type do
 
     it "should be suitable if its type doesn't use providers" do
       type.stubs(:paramclass).with(:provider).returns nil
-
-      resource.should be_suitable
+      expect(resource).to be_suitable
     end
 
     it "should be suitable if it has a provider which is suitable" do
-      resource.should be_suitable
+      expect(resource).to be_suitable
     end
 
     it "should not be suitable if it has a provider which is not suitable" do
       provider.class.stubs(:suitable?).returns false
-
-      resource.should_not be_suitable
+      expect(resource).not_to be_suitable
     end
 
     it "should be suitable if it does not have a provider and there is a default provider" do
       resource.stubs(:provider).returns nil
-
-      resource.should be_suitable
+      expect(resource).to be_suitable
     end
 
     it "should not be suitable if it doesn't have a provider and there is not default provider" do
       resource.stubs(:provider).returns nil
       type.stubs(:defaultprovider).returns nil
 
-      resource.should_not be_suitable
+      expect(resource).not_to be_suitable
     end
   end
 
@@ -652,7 +881,7 @@ describe Puppet::Type do
         mk_resource_methods
       end
 
-      expect { type.instances.should == [] }.should_not raise_error
+      expect { expect(type.instances).to eq([]) }.to_not raise_error
     end
 
     context "with a default provider" do
@@ -675,16 +904,16 @@ describe Puppet::Type do
       end
 
       it "should return only instances of the type" do
-        type.instances.should be_all {|x| x.is_a? type }
+        expect(type.instances).to be_all {|x| x.is_a? type }
       end
 
       it "should return instances from the default provider" do
-        type.instances.map(&:name).should == ["one", "two"]
+        expect(type.instances.map(&:name)).to eq(["one", "two"])
       end
 
       it "should return instances from all providers" do
         type.provide(:fake1, :parent => :default) { @names = [:three, :four] }
-        type.instances.map(&:name).should == ["one", "two", "three", "four"]
+        expect(type.instances.map(&:name)).to eq(["one", "two", "three", "four"])
       end
 
       it "should not return instances from unsuitable providers" do
@@ -693,7 +922,7 @@ describe Puppet::Type do
           confine :exists => "/no/such/file"
         end
 
-        type.instances.map(&:name).should == ["one", "two"]
+        expect(type.instances.map(&:name)).to eq(["one", "two"])
       end
     end
   end
@@ -709,24 +938,23 @@ describe Puppet::Type do
     end
 
     it "is true if the class has exists?, create, and destroy methods defined" do
-      TestEnsurableType.should be_ensurable
+      expect(TestEnsurableType).to be_ensurable
     end
 
     it "is false if exists? is not defined" do
       TestEnsurableType.class_eval { remove_method(:exists?) }
-      TestEnsurableType.should_not be_ensurable
+      expect(TestEnsurableType).not_to be_ensurable
     end
 
     it "is false if create is not defined" do
       TestEnsurableType.class_eval { remove_method(:create) }
-      TestEnsurableType.should_not be_ensurable
+      expect(TestEnsurableType).not_to be_ensurable
     end
 
     it "is false if destroy is not defined" do
       TestEnsurableType.class_eval { remove_method(:destroy) }
-      TestEnsurableType.should_not be_ensurable
+      expect(TestEnsurableType).not_to be_ensurable
     end
-  end
   end
 end
 
@@ -734,59 +962,77 @@ describe Puppet::Type::RelationshipMetaparam do
   include PuppetSpec::Files
 
   it "should be a subclass of Puppet::Parameter" do
-    Puppet::Type::RelationshipMetaparam.superclass.should equal(Puppet::Parameter)
+    expect(Puppet::Type::RelationshipMetaparam.superclass).to equal(Puppet::Parameter)
   end
 
   it "should be able to produce a list of subclasses" do
-    Puppet::Type::RelationshipMetaparam.should respond_to(:subclasses)
+    expect(Puppet::Type::RelationshipMetaparam).to respond_to(:subclasses)
   end
 
   describe "when munging relationships" do
-  pending("porting to Windows", :if => Puppet.features.microsoft_windows?) do
     before do
-      @path = make_absolute('/foo')
-      @resource = Puppet::Type.type(:mount).new :name => @path
+      @path = File.expand_path('/foo')
+      @resource = Puppet::Type.type(:file).new :name => @path
       @metaparam = Puppet::Type.metaparamclass(:require).new :resource => @resource
     end
 
     it "should accept Puppet::Resource instances" do
       ref = Puppet::Resource.new(:file, @path)
-      @metaparam.munge(ref)[0].should equal(ref)
+      expect(@metaparam.munge(ref)[0]).to equal(ref)
     end
 
     it "should turn any string into a Puppet::Resource" do
-      @metaparam.munge("File[/ref]")[0].should be_instance_of(Puppet::Resource)
+      expect(@metaparam.munge("File[/ref]")[0]).to be_instance_of(Puppet::Resource)
     end
-  end
   end
 
   it "should be able to validate relationships" do
-    Puppet::Type.metaparamclass(:require).new(:resource => mock("resource")).should respond_to(:validate_relationship)
+    expect(Puppet::Type.metaparamclass(:require).new(:resource => mock("resource"))).to respond_to(:validate_relationship)
   end
 
-  it "should fail if any specified resource is not found in the catalog" do
-    catalog = mock 'catalog'
-    resource = stub 'resource', :catalog => catalog, :ref => "resource"
+  describe 'if any specified resource is not in the catalog' do
+    let(:catalog) { mock 'catalog' }
 
-    param = Puppet::Type.metaparamclass(:require).new(:resource => resource, :value => %w{Foo[bar] Class[test]})
+    let(:resource) do
+      stub 'resource',
+        :catalog => catalog,
+        :ref     => 'resource',
+        :line=   => nil,
+        :line    => nil,
+        :file=   => nil,
+        :file    => nil
+    end
 
-    catalog.expects(:resource).with("Foo[bar]").returns "something"
-    catalog.expects(:resource).with("Class[Test]").returns nil
+    let(:param) { Puppet::Type.metaparamclass(:require).new(:resource => resource, :value => %w{Foo[bar] Class[test]}) }
 
-    param.expects(:fail).with { |string| string.include?("Class[Test]") }
+    before do
+      catalog.expects(:resource).with("Foo[bar]").returns "something"
+      catalog.expects(:resource).with("Class[Test]").returns nil
+    end
 
-    param.validate_relationship
-  end
-end
+    describe "and the resource doesn't have a file or line number" do
+      it "raises an error" do
+        expect { param.validate_relationship }.to raise_error do |error|
+          expect(error).to be_a Puppet::ResourceError
+          expect(error.message).to match %r[Class\[Test\]]
+        end
+      end
+    end
 
-describe Puppet::Type.metaparamclass(:check) do
-  include PuppetSpec::Files
+    describe "and the resource has a file or line number" do
+      before do
+        resource.stubs(:line).returns '42'
+        resource.stubs(:file).returns '/hitchhikers/guide/to/the/galaxy'
+      end
 
-  it "should warn and create an instance of ':audit'" do
-    file = Puppet::Type.type(:file).new :path => make_absolute('/foo')
-    file.expects(:warning)
-    file[:check] = :mode
-    file[:audit].should == [:mode]
+      it "raises an error with context" do
+        expect { param.validate_relationship }.to raise_error do |error|
+          expect(error).to be_a Puppet::ResourceError
+          expect(error.message).to match %r[Class\[Test\]]
+          expect(error.message).to match %r[/hitchhikers/guide/to/the/galaxy:42]
+        end
+      end
+    end
   end
 end
 
@@ -798,40 +1044,40 @@ describe Puppet::Type.metaparamclass(:audit) do
   end
 
   it "should default to being nil" do
-    @resource[:audit].should be_nil
+    expect(@resource[:audit]).to be_nil
   end
 
   it "should specify all possible properties when asked to audit all properties" do
     @resource[:audit] = :all
 
     list = @resource.class.properties.collect { |p| p.name }
-    @resource[:audit].should == list
+    expect(@resource[:audit]).to eq(list)
   end
 
   it "should accept the string 'all' to specify auditing all possible properties" do
     @resource[:audit] = 'all'
 
     list = @resource.class.properties.collect { |p| p.name }
-    @resource[:audit].should == list
+    expect(@resource[:audit]).to eq(list)
   end
 
   it "should fail if asked to audit an invalid property" do
-    lambda { @resource[:audit] = :foobar }.should raise_error(Puppet::Error)
+    expect { @resource[:audit] = :foobar }.to raise_error(Puppet::Error)
   end
 
   it "should create an attribute instance for each auditable property" do
     @resource[:audit] = :mode
-    @resource.parameter(:mode).should_not be_nil
+    expect(@resource.parameter(:mode)).not_to be_nil
   end
 
   it "should accept properties specified as a string" do
     @resource[:audit] = "mode"
-    @resource.parameter(:mode).should_not be_nil
+    expect(@resource.parameter(:mode)).not_to be_nil
   end
 
   it "should not create attribute instances for parameters, only properties" do
     @resource[:audit] = :noop
-    @resource.parameter(:noop).should be_nil
+    expect(@resource.parameter(:noop)).to be_nil
   end
 
   describe "when generating the uniqueness key" do
@@ -842,7 +1088,7 @@ describe Puppet::Type.metaparamclass(:audit) do
       )
       myfile = make_absolute('/my/file')
       res = Puppet::Type.type(:file).new( :title => myfile, :path => myfile, :owner => 'root', :content => 'hello' )
-      res.uniqueness_key.should == [ nil, 'root', myfile]
+      expect(res.uniqueness_key).to eq([ nil, 'root', myfile])
     end
   end
 
@@ -858,29 +1104,29 @@ describe Puppet::Type.metaparamclass(:audit) do
       type.newparam(:param) {}
       instance = type.new(:name => 'test')
 
-      expect { instance[:param] = true }.should_not raise_error
-      expect { instance["param"] = true }.should_not raise_error
-      instance[:param].should == true
-      instance["param"].should == true
+      expect { instance[:param] = true }.to_not raise_error
+      expect { instance["param"] = true }.to_not raise_error
+      expect(instance[:param]).to eq(true)
+      expect(instance["param"]).to eq(true)
     end
 
     it "should work with meta-parameters" do
       instance = type.new(:name => 'test')
 
-      expect { instance[:noop] = true }.should_not raise_error
-      expect { instance["noop"] = true }.should_not raise_error
-      instance[:noop].should == true
-      instance["noop"].should == true
+      expect { instance[:noop] = true }.to_not raise_error
+      expect { instance["noop"] = true }.to_not raise_error
+      expect(instance[:noop]).to eq(true)
+      expect(instance["noop"]).to eq(true)
     end
 
     it "should work with properties" do
       type.newproperty(:property) {}
       instance = type.new(:name => 'test')
 
-      expect { instance[:property] = true }.should_not raise_error
-      expect { instance["property"] = true }.should_not raise_error
-      instance.property(:property).must be
-      instance.should(:property).must be_true
+      expect { instance[:property] = true }.to_not raise_error
+      expect { instance["property"] = true }.to_not raise_error
+      expect(instance.property(:property)).to be
+      expect(instance.should(:property)).to be_truthy
     end
 
     it "should handle proprieties correctly" do
@@ -891,40 +1137,15 @@ describe Puppet::Type.metaparamclass(:audit) do
 
       instance[:one] = "boo"
       one = instance.property(:one)
-      instance.properties.must == [one]
+      expect(instance.properties).to eq [one]
 
       instance[:three] = "rah"
       three = instance.property(:three)
-      instance.properties.must == [one, three]
+      expect(instance.properties).to eq [one, three]
 
       instance[:two] = "whee"
       two = instance.property(:two)
-      instance.properties.must == [one, two, three]
-    end
-
-    it "should handle parameter aliases correctly" do
-      type.newparam(:one) {}
-      type.newproperty(:two) {}
-
-      type.set_attr_alias :three => :one
-      type.attr_alias(:three).must == :one
-
-      type.set_attr_alias :four => :two
-      type.attr_alias(:four).must == :two
-
-      type.attr_alias(:name).must_not be
-
-      instance = type.new(:name => "my name")
-      instance.must be
-
-      instance[:three]       = "value three"
-      instance.value(:three).must == "value three"
-      instance.value(:one).must   == "value three"
-
-      instance[:four]              = "value four"
-      instance.should(:four).must == "value four"
-      instance.value(:four).must  == "value four"
-      instance.value(:two).must   == "value four"
+      expect(instance.properties).to eq [one, two, three]
     end
 
     it "newattr should handle required features correctly" do
@@ -945,20 +1166,20 @@ describe Puppet::Type.metaparamclass(:audit) do
         rsrc = type.new(:provider => provider.name, :name => "test#{i}",
                         :none => "a", :one => "b", :two => "c")
 
-        rsrc.should(:none).must be
+        expect(rsrc.should(:none)).to be
 
         if provider.declared_feature? :feature1
-          rsrc.should(:one).must be
+          expect(rsrc.should(:one)).to be
         else
-          rsrc.should(:one).must_not be
-          @logs.find {|l| l.message =~ /not managing attribute one/ }.should be
+          expect(rsrc.should(:one)).to_not be
+          expect(@logs.find {|l| l.message =~ /not managing attribute one/ }).to be
         end
 
         if provider.declared_feature? :feature2
-          rsrc.should(:two).must be
+          expect(rsrc.should(:two)).to be
         else
-          rsrc.should(:two).must_not be
-          @logs.find {|l| l.message =~ /not managing attribute two/ }.should be
+          expect(rsrc.should(:two)).to_not be
+          expect(@logs.find {|l| l.message =~ /not managing attribute two/ }).to be
         end
       end
     end

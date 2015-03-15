@@ -246,7 +246,7 @@ module Generators
     end
 
     def gen_composite_index(collection, template, filename)\
-      return if FileTest.exists?(filename)
+      return if Puppet::FileSystem.exist?(filename)
 
       template = TemplatePage.new(RDoc::Page::FR_INDEX_BODY, template)
       res1 = []
@@ -416,7 +416,7 @@ module Generators
       @values["resources"] = rl unless rl.empty?
 
       @context.sections.each do |section|
-        secdata = @values["sections"].select { |secdata| secdata["secsequence"] == section.sequence }
+        secdata = @values["sections"].select { |s| s["secsequence"] == section.sequence }
         if secdata.size == 1
           secdata = secdata[0]
 
@@ -795,7 +795,6 @@ module Generators
       end
       @values["title"]     = "#{@values['classmod']}: #{h_name}"
 
-      c = @context
       @values["full_name"] = h_name
 
       files = []

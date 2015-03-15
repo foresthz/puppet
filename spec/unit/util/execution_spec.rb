@@ -1,17 +1,9 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
+require 'puppet/file_system/uniquefile'
 
 describe Puppet::Util::Execution do
   include Puppet::Util::Execution
-
-
-  # utility method to help deal with some windows vs. unix differences
-  def process_status(exitstatus)
-    return exitstatus if Puppet.features.microsoft_windows?
-
-    stub('child_status', :exitstatus => exitstatus)
-  end
-
   # utility methods to help us test some private methods without being quite so verbose
   def call_exec_posix(command, arguments, stdin, stdout, stderr)
     Puppet::Util::Execution.send(:execute_posix, command, arguments, stdin, stdout, stderr)
@@ -19,7 +11,6 @@ describe Puppet::Util::Execution do
   def call_exec_windows(command, arguments, stdin, stdout, stderr)
     Puppet::Util::Execution.send(:execute_windows, command, arguments, stdin, stdout, stderr)
   end
-
 
   describe "execution methods" do
     let(:pid) { 5501 }
@@ -31,8 +22,8 @@ describe Puppet::Util::Execution do
     def stub_process_wait(exitstatus)
       if Puppet.features.microsoft_windows?
         Puppet::Util::Windows::Process.stubs(:wait_process).with(process_handle).returns(exitstatus)
-        Process.stubs(:CloseHandle).with(process_handle)
-        Process.stubs(:CloseHandle).with(thread_handle)
+        FFI::WIN32.stubs(:CloseHandle).with(process_handle)
+        FFI::WIN32.stubs(:CloseHandle).with(thread_handle)
       else
         Process.stubs(:waitpid2).with(pid).returns([pid, stub('child_status', :exitstatus => exitstatus)])
       end
@@ -47,12 +38,15 @@ describe Puppet::Util::Execution do
         Puppet::Util::SUIDManager.stubs(:change_user)
         Puppet::Util::SUIDManager.stubs(:change_group)
 
+        # ensure that we don't really close anything!
+        (0..256).each {|n| IO.stubs(:new) }
+
         $stdin.stubs(:reopen)
         $stdout.stubs(:reopen)
         $stderr.stubs(:reopen)
 
         @stdin  = File.open(null_file, 'r')
-        @stdout = Tempfile.new('stdout')
+        @stdout = Puppet::FileSystem::Uniquefile.new('stdout')
         @stderr = File.open(null_file, 'w')
 
         # there is a danger here that ENV will be modified by exec_posix.  Normally it would only affect the ENV
@@ -75,8 +69,8 @@ describe Puppet::Util::Execution do
 
         # we will get some fairly useless output if we just use the raw == operator on the hashes here, so we'll
         #  be a bit more explicit and laborious in the name of making the error more useful...
-        @saved_env.each_pair { |key,val| cur_env[key].should == val }
-        (cur_env.keys - @saved_env.keys).should == []
+        @saved_env.each_pair { |key,val| expect(cur_env[key]).to eq(val) }
+        expect(cur_env.keys - @saved_env.keys).to eq([])
 
       end
 
@@ -122,7 +116,7 @@ describe Puppet::Util::Execution do
       end
 
       it "should return the pid of the child process" do
-        call_exec_posix('test command', {}, @stdin, @stdout, @stderr).should == pid
+        expect(call_exec_posix('test command', {}, @stdin, @stdout, @stderr)).to eq(pid)
       end
     end
 
@@ -132,7 +126,7 @@ describe Puppet::Util::Execution do
         stub_process_wait(0)
 
         @stdin  = File.open(null_file, 'r')
-        @stdout = Tempfile.new('stdout')
+        @stdout = Puppet::FileSystem::Uniquefile.new('stdout')
         @stderr = File.open(null_file, 'w')
       end
 
@@ -147,7 +141,7 @@ describe Puppet::Util::Execution do
       end
 
       it "should return the process info of the child process" do
-        call_exec_windows('test command', {}, @stdin, @stdout, @stderr).should == proc_info_stub
+        expect(call_exec_windows('test command', {}, @stdin, @stdout, @stderr)).to eq(proc_info_stub)
       end
 
       it "should quote arguments containing spaces if command is specified as an array" do
@@ -172,7 +166,7 @@ describe Puppet::Util::Execution do
         end
 
         it "should call the block on the stub" do
-          Puppet::Util::Execution.execute("/usr/bin/run_my_execute_stub").should == "execution stub output"
+          expect(Puppet::Util::Execution.execute("/usr/bin/run_my_execute_stub")).to eq("execution stub output")
         end
 
         it "should not actually execute anything" do
@@ -223,8 +217,8 @@ describe Puppet::Util::Execution do
 
         describe "when squelch is not set" do
           it "should set stdout to a temporary output file" do
-            outfile = Tempfile.new('stdout')
-            Tempfile.stubs(:new).returns(outfile)
+            outfile = Puppet::FileSystem::Uniquefile.new('stdout')
+            Puppet::FileSystem::Uniquefile.stubs(:new).returns(outfile)
 
             Puppet::Util::Execution.expects(executor).with do |_,_,_,stdout,_|
               stdout.path == outfile.path
@@ -234,8 +228,8 @@ describe Puppet::Util::Execution do
           end
 
           it "should set stderr to the same file as stdout if combine is true" do
-            outfile = Tempfile.new('stdout')
-            Tempfile.stubs(:new).returns(outfile)
+            outfile = Puppet::FileSystem::Uniquefile.new('stdout')
+            Puppet::FileSystem::Uniquefile.stubs(:new).returns(outfile)
 
             Puppet::Util::Execution.expects(executor).with do |_,_,_,stdout,stderr|
               stdout.path == outfile.path and stderr.path == outfile.path
@@ -245,14 +239,58 @@ describe Puppet::Util::Execution do
           end
 
           it "should set stderr to the null device if combine is false" do
-            outfile = Tempfile.new('stdout')
-            Tempfile.stubs(:new).returns(outfile)
+            outfile = Puppet::FileSystem::Uniquefile.new('stdout')
+            Puppet::FileSystem::Uniquefile.stubs(:new).returns(outfile)
 
             Puppet::Util::Execution.expects(executor).with do |_,_,_,stdout,stderr|
               stdout.path == outfile.path and stderr.path == null_file
             end.returns(rval)
 
             Puppet::Util::Execution.execute('test command', :squelch => false, :combine => false)
+          end
+
+          it "should combine stdout and stderr if combine is true" do
+            outfile = Puppet::FileSystem::Uniquefile.new('stdout')
+            Puppet::FileSystem::Uniquefile.stubs(:new).returns(outfile)
+
+            Puppet::Util::Execution.expects(executor).with do |_,_,_,stdout,stderr|
+              stdout.path == outfile.path and stderr.path == outfile.path
+            end.returns(rval)
+
+            Puppet::Util::Execution.execute('test command', :combine => true)
+          end
+
+          it "should default combine to true when no options are specified" do
+            outfile = Puppet::FileSystem::Uniquefile.new('stdout')
+            Puppet::FileSystem::Uniquefile.stubs(:new).returns(outfile)
+
+            Puppet::Util::Execution.expects(executor).with do |_,_,_,stdout,stderr|
+              stdout.path == outfile.path and stderr.path == outfile.path
+            end.returns(rval)
+
+            Puppet::Util::Execution.execute('test command')
+          end
+
+          it "should default combine to false when options are specified, but combine is not" do
+            outfile = Puppet::FileSystem::Uniquefile.new('stdout')
+            Puppet::FileSystem::Uniquefile.stubs(:new).returns(outfile)
+
+            Puppet::Util::Execution.expects(executor).with do |_,_,_,stdout,stderr|
+              stdout.path == outfile.path and stderr.path == null_file
+            end.returns(rval)
+
+            Puppet::Util::Execution.execute('test command', :failonfail => false)
+          end
+
+          it "should default combine to false when an empty hash of options is specified" do
+            outfile = Puppet::FileSystem::Uniquefile.new('stdout')
+            Puppet::FileSystem::Uniquefile.stubs(:new).returns(outfile)
+
+            Puppet::Util::Execution.expects(executor).with do |_,_,_,stdout,stderr|
+              stdout.path == outfile.path and stderr.path == null_file
+            end.returns(rval)
+
+            Puppet::Util::Execution.execute('test command', {})
           end
         end
       end
@@ -262,10 +300,20 @@ describe Puppet::Util::Execution do
           Puppet::Util::Execution.stubs(:execute_windows).returns(proc_info_stub)
 
           Puppet::Util::Windows::Process.expects(:wait_process).with(process_handle).raises('whatever')
-          Process.expects(:CloseHandle).with(thread_handle)
-          Process.expects(:CloseHandle).with(process_handle)
+          FFI::WIN32.expects(:CloseHandle).with(thread_handle)
+          FFI::WIN32.expects(:CloseHandle).with(process_handle)
 
-          expect { Puppet::Util::Execution.execute('test command') }.should raise_error(RuntimeError)
+          expect { Puppet::Util::Execution.execute('test command') }.to raise_error(RuntimeError)
+        end
+
+        it "should return the correct exit status even when exit status is greater than 256" do
+          real_exit_status = 3010
+
+          Puppet::Util::Execution.stubs(:execute_windows).returns(proc_info_stub)
+          stub_process_wait(real_exit_status)
+          $CHILD_STATUS.stubs(:exitstatus).returns(real_exit_status % 256) # The exitstatus is changed to be mod 256 so that ruby can fit it into 8 bits.
+
+          expect(Puppet::Util::Execution.execute('test command', :failonfail => false).exitstatus).to eq(real_exit_status)
         end
       end
     end
@@ -286,8 +334,8 @@ describe Puppet::Util::Execution do
         cur_env = ENV.to_hash
         # we will get some fairly useless output if we just use the raw == operator on the hashes here, so we'll
         #  be a bit more explicit and laborious in the name of making the error more useful...
-        @saved_env.each_pair { |key,val| cur_env[key].should == val }
-        (cur_env.keys - @saved_env.keys).should == []
+        @saved_env.each_pair { |key,val| expect(cur_env[key]).to eq(val) }
+        expect(cur_env.keys - @saved_env.keys).to eq([])
       end
 
 
@@ -297,7 +345,7 @@ describe Puppet::Util::Execution do
 
       # a sentinel value that we can use to emulate what locale environment variables might be set to on an international
       # system.
-      lang_sentinel_value = "es_ES.UTF-8"
+      lang_sentinel_value = "en_US.UTF-8"
       # a temporary hash that contains sentinel values for each of the locale environment variables that we override in
       # "execute"
       locale_sentinel_env = {}
@@ -310,7 +358,7 @@ describe Puppet::Util::Execution do
           Puppet::Util::POSIX::LOCALE_ENV_VARS.each do |var|
             # we expect that all of the POSIX vars will have been cleared except for LANG and LC_ALL
             expected_value = (['LANG', 'LC_ALL'].include?(var)) ? "C" : ""
-            Puppet::Util::execute(get_env_var_cmd % var).strip.should == expected_value
+            expect(Puppet::Util::Execution.execute(get_env_var_cmd % var).strip).to eq(expected_value)
           end
         end
       end
@@ -322,7 +370,7 @@ describe Puppet::Util::Execution do
           Puppet::Util::POSIX::LOCALE_ENV_VARS.each do |var|
             # we expect that all of the POSIX vars will have been cleared except for LANG and LC_ALL
             expected_value = (['LANG', 'LC_ALL'].include?(var)) ? "C" : ""
-            Puppet::Util::execute(get_env_var_cmd % var, {:override_locale => true}).strip.should == expected_value
+            expect(Puppet::Util::Execution.execute(get_env_var_cmd % var, {:override_locale => true}).strip).to eq(expected_value)
           end
         end
       end
@@ -332,7 +380,7 @@ describe Puppet::Util::Execution do
         # execute is not setting them.
         Puppet::Util.withenv(locale_sentinel_env) do
           Puppet::Util::POSIX::LOCALE_ENV_VARS.each do |var|
-            Puppet::Util::execute(get_env_var_cmd % var, {:override_locale => false}).strip.should == lang_sentinel_value
+            expect(Puppet::Util::Execution.execute(get_env_var_cmd % var, {:override_locale => false}).strip).to eq(lang_sentinel_value)
           end
         end
       end
@@ -344,19 +392,19 @@ describe Puppet::Util::Execution do
           orig_env_vals[var] = ENV[var]
         end
         # now we can really execute any command--doesn't matter what it is...
-        Puppet::Util::execute(get_env_var_cmd % 'anything', {:override_locale => true})
+        Puppet::Util::Execution.execute(get_env_var_cmd % 'anything', {:override_locale => true})
         # now we check and make sure the original environment was restored
         Puppet::Util::POSIX::LOCALE_ENV_VARS.each do |var|
-          ENV[var].should == orig_env_vals[var]
+          expect(ENV[var]).to eq(orig_env_vals[var])
         end
 
         # now, once more... but with our sentinel values
         Puppet::Util.withenv(locale_sentinel_env) do
           # now we can really execute any command--doesn't matter what it is...
-          Puppet::Util::execute(get_env_var_cmd % 'anything', {:override_locale => true})
+          Puppet::Util::Execution.execute(get_env_var_cmd % 'anything', {:override_locale => true})
           # now we check and make sure the original environment was restored
           Puppet::Util::POSIX::LOCALE_ENV_VARS.each do |var|
-            ENV[var].should == locale_sentinel_env[var]
+            expect(ENV[var]).to eq(locale_sentinel_env[var])
           end
         end
 
@@ -383,13 +431,13 @@ describe Puppet::Util::Execution do
           # with this environment, we loop over the vars in question
           Puppet::Util::POSIX::USER_ENV_VARS.each do |var|
             # ensure that our temporary environment is set up as we expect
-            ENV[var].should == user_sentinel_env[var]
+            expect(ENV[var]).to eq(user_sentinel_env[var])
 
             # run an "exec" via the provider and ensure that it unsets the vars
-            Puppet::Util::execute(get_env_var_cmd % var).strip.should == ""
+            expect(Puppet::Util::Execution.execute(get_env_var_cmd % var).strip).to eq("")
 
             # ensure that after the exec, our temporary env is still intact
-            ENV[var].should == user_sentinel_env[var]
+            expect(ENV[var]).to eq(user_sentinel_env[var])
           end
 
         end
@@ -402,22 +450,67 @@ describe Puppet::Util::Execution do
           orig_env_vals[var] = ENV[var]
         end
         # now we can really execute any command--doesn't matter what it is...
-        Puppet::Util::execute(get_env_var_cmd % 'anything')
+        Puppet::Util::Execution.execute(get_env_var_cmd % 'anything')
         # now we check and make sure the original environment was restored
         Puppet::Util::POSIX::USER_ENV_VARS.each do |var|
-          ENV[var].should == orig_env_vals[var]
+          expect(ENV[var]).to eq(orig_env_vals[var])
         end
 
         # now, once more... but with our sentinel values
         Puppet::Util.withenv(user_sentinel_env) do
           # now we can really execute any command--doesn't matter what it is...
-          Puppet::Util::execute(get_env_var_cmd % 'anything')
+          Puppet::Util::Execution.execute(get_env_var_cmd % 'anything')
           # now we check and make sure the original environment was restored
           Puppet::Util::POSIX::USER_ENV_VARS.each do |var|
-            ENV[var].should == user_sentinel_env[var]
+            expect(ENV[var]).to eq(user_sentinel_env[var])
           end
         end
 
+      end
+    end
+
+    describe "#execute (debug logging)" do
+      before :each do
+        stub_process_wait(0)
+
+        if Puppet.features.microsoft_windows?
+          Puppet::Util::Execution.stubs(:execute_windows).returns(proc_info_stub)
+        else
+          Puppet::Util::Execution.stubs(:execute_posix).returns(pid)
+        end
+      end
+
+      it "should log if no uid or gid specified" do
+        Puppet::Util::Execution.expects(:debug).with("Executing: 'echo hello'")
+        Puppet::Util::Execution.execute('echo hello')
+      end
+      it "should log numeric uid if specified" do
+        Puppet::Util::Execution.expects(:debug).with("Executing with uid=100: 'echo hello'")
+        Puppet::Util::Execution.execute('echo hello', {:uid => 100})
+      end
+      it "should log numeric gid if specified" do
+        Puppet::Util::Execution.expects(:debug).with("Executing with gid=500: 'echo hello'")
+        Puppet::Util::Execution.execute('echo hello', {:gid => 500})
+      end
+      it "should log numeric uid and gid if specified" do
+        Puppet::Util::Execution.expects(:debug).with("Executing with uid=100 gid=500: 'echo hello'")
+        Puppet::Util::Execution.execute('echo hello', {:uid => 100, :gid => 500})
+      end
+      it "should log string uid if specified" do
+        Puppet::Util::Execution.expects(:debug).with("Executing with uid=myuser: 'echo hello'")
+        Puppet::Util::Execution.execute('echo hello', {:uid => 'myuser'})
+      end
+      it "should log string gid if specified" do
+        Puppet::Util::Execution.expects(:debug).with("Executing with gid=mygroup: 'echo hello'")
+        Puppet::Util::Execution.execute('echo hello', {:gid => 'mygroup'})
+      end
+      it "should log string uid and gid if specified" do
+        Puppet::Util::Execution.expects(:debug).with("Executing with uid=myuser gid=mygroup: 'echo hello'")
+        Puppet::Util::Execution.execute('echo hello', {:uid => 'myuser', :gid => 'mygroup'})
+      end
+      it "should log numeric uid and string gid if specified" do
+        Puppet::Util::Execution.expects(:debug).with("Executing with uid=100 gid=mygroup: 'echo hello'")
+        Puppet::Util::Execution.execute('echo hello', {:uid => 100, :gid => 'mygroup'})
       end
     end
 
@@ -453,60 +546,89 @@ describe Puppet::Util::Execution do
       end
 
       it "should read and return the output if squelch is false" do
-        stdout = Tempfile.new('test')
-        Tempfile.stubs(:new).returns(stdout)
+        stdout = Puppet::FileSystem::Uniquefile.new('test')
+        Puppet::FileSystem::Uniquefile.stubs(:new).returns(stdout)
         stdout.write("My expected command output")
 
-        Puppet::Util::Execution.execute('test command').should == "My expected command output"
+        expect(Puppet::Util::Execution.execute('test command')).to eq("My expected command output")
       end
 
       it "should not read the output if squelch is true" do
-        stdout = Tempfile.new('test')
-        Tempfile.stubs(:new).returns(stdout)
+        stdout = Puppet::FileSystem::Uniquefile.new('test')
+        Puppet::FileSystem::Uniquefile.stubs(:new).returns(stdout)
         stdout.write("My expected command output")
 
-        Puppet::Util::Execution.execute('test command', :squelch => true).should == nil
+        expect(Puppet::Util::Execution.execute('test command', :squelch => true)).to eq('')
       end
 
       it "should delete the file used for output if squelch is false" do
-        stdout = Tempfile.new('test')
+        stdout = Puppet::FileSystem::Uniquefile.new('test')
         path = stdout.path
-        Tempfile.stubs(:new).returns(stdout)
+        Puppet::FileSystem::Uniquefile.stubs(:new).returns(stdout)
 
         Puppet::Util::Execution.execute('test command')
 
-        File.should_not be_exist(path)
+        expect(Puppet::FileSystem.exist?(path)).to be_falsey
+      end
+
+      it "should not raise an error if the file is open" do
+        stdout = Puppet::FileSystem::Uniquefile.new('test')
+        Puppet::FileSystem::Uniquefile.stubs(:new).returns(stdout)
+        file = File.new(stdout.path, 'r')
+
+        Puppet::Util::Execution.execute('test command')
       end
 
       it "should raise an error if failonfail is true and the child failed" do
         stub_process_wait(1)
 
         expect {
-          Puppet::Util::Execution.execute('fail command', :failonfail => true)
+          subject.execute('fail command', :failonfail => true)
         }.to raise_error(Puppet::ExecutionFailure, /Execution of 'fail command' returned 1/)
       end
 
       it "should not raise an error if failonfail is false and the child failed" do
         stub_process_wait(1)
 
-        expect {
-          Puppet::Util::Execution.execute('fail command', :failonfail => false)
-        }.not_to raise_error
+        subject.execute('fail command', :failonfail => false)
       end
 
       it "should not raise an error if failonfail is true and the child succeeded" do
-        expect {
-          Puppet::Util::Execution.execute('fail command', :failonfail => true)
-        }.not_to raise_error
+        stub_process_wait(0)
+
+        subject.execute('fail command', :failonfail => true)
       end
 
-      it "should respect default values for args that aren't overridden if a partial arg list is passed in" do
+      it "should not raise an error if failonfail is false and the child succeeded" do
+        stub_process_wait(0)
+
+        subject.execute('fail command', :failonfail => false)
+      end
+
+      it "should default failonfail to true when no options are specified" do
         stub_process_wait(1)
+
         expect {
-          # here we are passing in a non-nil value for "arguments", but we aren't specifying a value for
-          # :failonfail.  We expect it to be set to its normal default value (true).
-          Puppet::Util::Execution.execute('fail command', { :squelch => true })
+          subject.execute('fail command')
         }.to raise_error(Puppet::ExecutionFailure, /Execution of 'fail command' returned 1/)
+      end
+
+      it "should default failonfail to false when options are specified, but failonfail is not" do
+        stub_process_wait(1)
+
+        subject.execute('fail command', { :combine => true })
+      end
+
+      it "should default failonfail to false when an empty hash of options is specified" do
+        stub_process_wait(1)
+
+        subject.execute('fail command', {})
+      end
+
+      it "should raise an error if a nil option is specified" do
+        expect {
+          Puppet::Util::Execution.execute('fail command', nil)
+        }.to raise_error(TypeError, /(can\'t convert|no implicit conversion of) nil into Hash/)
       end
     end
   end
@@ -514,29 +636,40 @@ describe Puppet::Util::Execution do
   describe "#execpipe" do
     it "should execute a string as a string" do
       Puppet::Util::Execution.expects(:open).with('| echo hello 2>&1').returns('hello')
-      $CHILD_STATUS.expects(:==).with(0).returns(true)
-      Puppet::Util::Execution.execpipe('echo hello').should == 'hello'
+      Puppet::Util::Execution.expects(:exitstatus).returns(0)
+      expect(Puppet::Util::Execution.execpipe('echo hello')).to eq('hello')
+    end
+
+    it "should print meaningful debug message for string argument" do
+      Puppet::Util::Execution.expects(:debug).with("Executing 'echo hello'")
+      Puppet::Util::Execution.expects(:open).with('| echo hello 2>&1').returns('hello')
+      Puppet::Util::Execution.expects(:exitstatus).returns(0)
+      Puppet::Util::Execution.execpipe('echo hello')
+    end
+
+    it "should print meaningful debug message for array argument" do
+      Puppet::Util::Execution.expects(:debug).with("Executing 'echo hello'")
+      Puppet::Util::Execution.expects(:open).with('| echo hello 2>&1').returns('hello')
+      Puppet::Util::Execution.expects(:exitstatus).returns(0)
+      Puppet::Util::Execution.execpipe(['echo','hello'])
     end
 
     it "should execute an array by pasting together with spaces" do
       Puppet::Util::Execution.expects(:open).with('| echo hello 2>&1').returns('hello')
-      $CHILD_STATUS.expects(:==).with(0).returns(true)
-      Puppet::Util::Execution.execpipe(['echo', 'hello']).should == 'hello'
+      Puppet::Util::Execution.expects(:exitstatus).returns(0)
+      expect(Puppet::Util::Execution.execpipe(['echo', 'hello'])).to eq('hello')
     end
 
     it "should fail if asked to fail, and the child does" do
-      Puppet::Util::Execution.stubs(:open).returns('error message')
-      $CHILD_STATUS.expects(:==).with(0).returns(false)
+      Puppet::Util::Execution.stubs(:open).with('| echo hello 2>&1').returns('error message')
+      Puppet::Util::Execution.expects(:exitstatus).returns(1)
       expect { Puppet::Util::Execution.execpipe('echo hello') }.
         to raise_error Puppet::ExecutionFailure, /error message/
     end
 
     it "should not fail if asked not to fail, and the child does" do
       Puppet::Util::Execution.stubs(:open).returns('error message')
-      $CHILD_STATUS.stubs(:==).with(0).returns(false)
-      expect do
-        Puppet::Util::Execution.execpipe('echo hello', false).should == 'error message'
-      end.not_to raise_error
+      expect(Puppet::Util::Execution.execpipe('echo hello', false)).to eq('error message')
     end
   end
 end

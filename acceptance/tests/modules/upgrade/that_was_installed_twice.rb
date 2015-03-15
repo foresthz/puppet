@@ -1,57 +1,64 @@
-begin test_name "puppet module upgrade (that was installed twice)"
+test_name "puppet module upgrade (that was installed twice)"
+skip_test "This test does not seem to properly respect the given modulepath"
 
 step 'Setup'
-require 'resolv'; ip = Resolv.getaddress('forge-dev.puppetlabs.lan')
-apply_manifest_on master, "host { 'forge.puppetlabs.com': ip => '#{ip}' }"
-apply_manifest_on master, <<-'MANIFEST1'
-file { '/usr/share/puppet':
-  ensure  => directory,
+
+stub_forge_on(master)
+testdir = master.tmpdir('upgrademultimods')
+
+teardown do
+  on master, "rm -rf #{master['distmoduledir']}/java"
+  on master, "rm -rf #{master['distmoduledir']}/stdlub"
+  on master, "rm -rf #{testdir}/modules/java"
+  on master, "rm -rf #{testdir}/modules/stdlub"
+end
+
+master_opts = {
+  'main' => {
+    'modulepath' => "#{master['distmoduledir']}:#{testdir}/modules"
+  }
 }
-file { ['/etc/puppet/modules', '/usr/share/puppet/modules']:
-  ensure  => directory,
-  recurse => true,
-  purge   => true,
-  force   => true,
-}
-MANIFEST1
-on master, puppet("module install pmtacceptance-java --version 1.6.0 --modulepath /etc/puppet/modules")
-on master, puppet("module install pmtacceptance-java --version 1.7.0 --modulepath /usr/share/puppet/modules")
-on master, puppet("module list") do
-  assert_output <<-OUTPUT
-    /etc/puppet/modules
-    ├── pmtacceptance-java (\e[0;36mv1.6.0\e[0m)
-    └── pmtacceptance-stdlib (\e[0;36mv1.0.0\e[0m)
-    /usr/share/puppet/modules
-    ├── pmtacceptance-java (\e[0;36mv1.7.0\e[0m)
-    └── pmtacceptance-stdlib (\e[0;36mv1.0.0\e[0m)
-  OUTPUT
-end
 
-step "Try to upgrade a module that exists multiple locations in the module path"
-on master, puppet("module upgrade pmtacceptance-java"), :acceptable_exit_codes => [1] do
-  assert_output <<-OUTPUT
-    STDOUT> Preparing to upgrade 'pmtacceptance-java' ...
-    STDERR> \e[1;31mError: Could not upgrade module 'pmtacceptance-java'
-    STDERR>   Module 'pmtacceptance-java' appears multiple places in the module path
-    STDERR>     'pmtacceptance-java' (v1.6.0) was found in /etc/puppet/modules
-    STDERR>     'pmtacceptance-java' (v1.7.0) was found in /usr/share/puppet/modules
-    STDERR>     Use the `--modulepath` option to limit the search to specific directories\e[0m
-  OUTPUT
-end
 
-step "Upgrade a module that exists multiple locations by restricting the --modulepath"
-on master, puppet("module upgrade pmtacceptance-java --modulepath /etc/puppet/modules") do
-  assert_output <<-OUTPUT
-    Preparing to upgrade 'pmtacceptance-java' ...
-    Found 'pmtacceptance-java' (\e[0;36mv1.6.0\e[0m) in /etc/puppet/modules ...
-    Downloading from http://forge.puppetlabs.com ...
-    Upgrading -- do not interrupt ...
-    /etc/puppet/modules
-    └── pmtacceptance-java (\e[0;36mv1.6.0 -> v1.7.1\e[0m)
-  OUTPUT
-end
 
-ensure step "Teardown"
-apply_manifest_on master, "host { 'forge.puppetlabs.com': ensure => absent }"
-apply_manifest_on master, "file { ['/etc/puppet/modules', '/usr/share/puppet/modules']: ensure => directory, recurse => true, purge => true, force => true }"
+with_puppet_running_on master, master_opts, testdir do
+  on master, puppet("module install pmtacceptance-java --version 1.6.0 --modulepath #{master['distmoduledir']}")
+  on master, puppet("module install pmtacceptance-java --version 1.7.0 --modulepath #{testdir}/modules")
+  on master, puppet("module list") do
+    pattern = Regexp.new([
+      "#{master['distmoduledir']}",
+      "├── pmtacceptance-java \\(.*v1.6.0\e.*\\)",
+      "└── pmtacceptance-stdlub \\(.*v1.0.0.*\\)",
+      "#{testdir}/modules",
+      "├── pmtacceptance-java \\(.*v1.7.0.*\\)",
+      "└── pmtacceptance-stdlub \\(.*v1.0.0.*\\)",
+    ].join("\n"))
+    assert_match(pattern, result.output)
+  end
+
+  step "Try to upgrade a module that exists multiple locations in the module path"
+  on master, puppet("module upgrade pmtacceptance-java"), :acceptable_exit_codes => [1] do
+    pattern = Regexp.new([
+      ".*Notice: Preparing to upgrade 'pmtacceptance-java' .*",
+      ".*Error: Could not upgrade module 'pmtacceptance-java'",
+      "  Module 'pmtacceptance-java' appears multiple places in the module path",
+      "    'pmtacceptance-java' \\(v1.6.0\\) was found in #{master['distmoduledir']}",
+      "    'pmtacceptance-java' \\(v1.7.0\\) was found in #{testdir}/modules",
+      "    Use the `--modulepath` option to limit the search to specific directories",
+    ].join("\n"), Regexp::MULTILINE)
+    assert_match(pattern, result.output)
+  end
+
+  step "Upgrade a module that exists multiple locations by restricting the --modulepath"
+  on master, puppet("module upgrade pmtacceptance-java --modulepath #{master['distmoduledir']}") do
+    pattern = Regexp.new([
+      ".*Notice: Preparing to upgrade 'pmtacceptance-java' .*",
+      ".*Notice: Found 'pmtacceptance-java' \\(.*v1.6.0.*\\) in #{master['distmoduledir']} .*",
+      ".*Notice: Downloading from https://forgeapi.puppetlabs.com .*",
+      ".*Notice: Upgrading -- do not interrupt .*",
+      "#{master['distmoduledir']}",
+      "└── pmtacceptance-java \\(.*v1.6.0 -> v1.7.1.*\\)",
+    ].join("\n"), Regexp::MULTILINE)
+    assert_match(pattern, result.output)
+  end
 end

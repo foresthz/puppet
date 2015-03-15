@@ -1,47 +1,77 @@
 # Rakefile for Puppet -*- ruby -*-
+RAKE_ROOT = File.dirname(__FILE__)
 
-$LOAD_PATH << File.join(File.dirname(__FILE__), 'tasks')
+# We need access to the Puppet.version method
+$LOAD_PATH.unshift(File.expand_path("lib"))
+require 'puppet/version'
+
+$LOAD_PATH << File.join(RAKE_ROOT, 'tasks')
+
+begin
+  require 'rubygems'
+  require 'rubygems/package_task'
+rescue LoadError
+  # Users of older versions of Rake (0.8.7 for example) will not necessarily
+  # have rubygems installed, or the newer rubygems package_task for that
+  # matter.
+  require 'rake/packagetask'
+  require 'rake/gempackagetask'
+end
 
 require 'rake'
-require 'rake/packagetask'
-require 'rake/gempackagetask'
-require 'rspec'
-require "rspec/core/rake_task"
-
-module Puppet
-    PUPPETVERSION = File.read('lib/puppet.rb')[/PUPPETVERSION *= *'(.*)'/,1] or fail "Couldn't find PUPPETVERSION"
-end
 
 Dir['tasks/**/*.rake'].each { |t| load t }
 
-FILES = FileList[
-    '[A-Z]*',
-    'install.rb',
-    'bin/**/*',
-    'sbin/**/*',
-    'lib/**/*',
-    'conf/**/*',
-    'man/**/*',
-    'examples/**/*',
-    'ext/**/*',
-    'tasks/**/*',
-    'spec/**/*'
-]
+begin
+  load File.join(RAKE_ROOT, 'ext', 'packaging', 'packaging.rake')
+rescue LoadError
+end
 
-Rake::PackageTask.new("puppet", Puppet::PUPPETVERSION) do |pkg|
-    pkg.package_dir = 'pkg'
-    pkg.need_tar_gz = true
-    pkg.package_files = FILES.to_a
+build_defs_file = 'ext/build_defaults.yaml'
+if File.exist?(build_defs_file)
+  begin
+    require 'yaml'
+    @build_defaults ||= YAML.load_file(build_defs_file)
+  rescue Exception => e
+    STDERR.puts "Unable to load yaml from #{build_defs_file}:"
+    STDERR.puts e
+  end
+  @packaging_url  = @build_defaults['packaging_url']
+  @packaging_repo = @build_defaults['packaging_repo']
+  raise "Could not find packaging url in #{build_defs_file}" if @packaging_url.nil?
+  raise "Could not find packaging repo in #{build_defs_file}" if @packaging_repo.nil?
+
+  namespace :package do
+    desc "Bootstrap packaging automation, e.g. clone into packaging repo"
+    task :bootstrap do
+      if File.exist?("ext/#{@packaging_repo}")
+        puts "It looks like you already have ext/#{@packaging_repo}. If you don't like it, blow it away with package:implode."
+      else
+        cd 'ext' do
+          %x{git clone #{@packaging_url}}
+        end
+      end
+    end
+    desc "Remove all cloned packaging automation"
+    task :implode do
+      rm_rf "ext/#{@packaging_repo}"
+    end
+  end
 end
 
 task :default do
-    sh %{rake -T}
+  sh %{rake -T}
 end
 
-desc "Create the tarball and the gem - use when releasing"
-task :puppetpackages => [:gem, :package]
-
-RSpec::Core::RakeTask.new do |t|
-    t.pattern ='spec/{unit,integration}/**/*.rb'
-    t.fail_on_error = true
+task :spec do
+  sh %{rspec #{ENV['TEST'] || ENV['TESTS'] || 'spec'}}
 end
+
+desc 'run static analysis with rubocop'
+task(:rubocop) do
+  require 'rubocop'
+  cli = RuboCop::CLI.new
+  exit_code = cli.run(%w(--display-cop-names --format simple))
+  raise "RuboCop detected offenses" if exit_code != 0
+end
+

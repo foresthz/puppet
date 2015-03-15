@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/indirector/report/processor'
@@ -9,11 +9,11 @@ describe Puppet::Transaction::Report::Processor do
   end
 
   it "should provide a method for saving reports" do
-    Puppet::Transaction::Report::Processor.new.should respond_to(:save)
+    expect(Puppet::Transaction::Report::Processor.new).to respond_to(:save)
   end
 
   it "should provide a method for cleaning reports" do
-    Puppet::Transaction::Report::Processor.new.should respond_to(:destroy)
+    expect(Puppet::Transaction::Report::Processor.new).to respond_to(:destroy)
   end
 
 end
@@ -37,8 +37,8 @@ describe Puppet::Transaction::Report::Processor, " when processing a report" do
   end
 
   it "should save the report with each configured report type" do
-    Puppet.settings.stubs(:value).with(:reports).returns("one,two")
-    @reporter.send(:reports).should == %w{one two}
+    Puppet[:reports] = "one,two"
+    expect(@reporter.send(:reports)).to eq(%w{one two})
 
     Puppet::Reports.expects(:report).with('one')
     Puppet::Reports.expects(:report).with('two')
@@ -47,7 +47,7 @@ describe Puppet::Transaction::Report::Processor, " when processing a report" do
   end
 
   it "should destroy reports for each processor that responds to destroy" do
-    Puppet.settings.stubs(:value).with(:reports).returns("http,store")
+    Puppet[:reports] = "http,store"
     http_report = mock()
     store_report = mock()
     store_report.expects(:destroy).with(@request.key)
@@ -95,6 +95,6 @@ describe Puppet::Transaction::Report::Processor, " when processing a report" do
   it "should not raise exceptions" do
     Puppet[:trace] = false
     @dup_report.expects(:process).raises(ArgumentError)
-    proc { @reporter.save(@request) }.should_not raise_error
+    expect { @reporter.save(@request) }.not_to raise_error
   end
 end

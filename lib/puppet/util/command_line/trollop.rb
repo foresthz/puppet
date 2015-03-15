@@ -6,9 +6,15 @@
 ## 2012-03: small changes made by cprice (chris@puppetlabs.com);
 ##           patch submitted for upstream consideration:
 ##           https://gitorious.org/trollop/mainline/merge_requests/9
+## 2012-08: namespace changes made by Jeff McCune (jeff@puppetlabs.com)
+##           moved Trollop into Puppet::Util::CommandLine to prevent monkey
+##           patching the upstream trollop library if also loaded.
 
 require 'date'
 
+module Puppet
+module Util
+class CommandLine
 module Trollop
 
 VERSION = "1.16.2"
@@ -16,7 +22,7 @@ VERSION = "1.16.2"
 ## Thrown by Parser in the event of a commandline error. Not needed if
 ## you're using the Trollop::options entry.
 class CommandlineError < StandardError; end
-  
+
 ## Thrown by Parser if the user passes in '-h' or '--help'. Handled
 ## automatically by Trollop#options.
 class HelpNeeded < StandardError; end
@@ -109,7 +115,7 @@ class Parser
   ## [+:long+] Specify the long form of the argument, i.e. the form with two dashes. If unspecified, will be automatically derived based on the argument name by turning the +name+ option into a string, and replacing any _'s by -'s.
   ## [+:short+] Specify the short form of the argument, i.e. the form with one dash. If unspecified, will be automatically derived from +name+.
   ## [+:type+] Require that the argument take a parameter or parameters of type +type+. For a single parameter, the value can be a member of +SINGLE_ARG_TYPES+, or a corresponding Ruby class (e.g. +Integer+ for +:int+). For multiple-argument parameters, the value can be any member of +MULTI_ARG_TYPES+ constant. If unset, the default argument type is +:flag+, meaning that the argument does not take a parameter. The specification of +:type+ is not necessary if a +:default+ is given.
-  ## [+:default+] Set the default value for an argument. Without a default value, the hash returned by #parse (and thus Trollop::options) will have a +nil+ value for this key unless the argument is given on the commandline. The argument type is derived automatically from the class of the default value given, so specifying a +:type+ is not necessary if a +:default+ is given. (But see below for an important caveat when +:multi+: is specified too.) If the argument is a flag, and the default is set to +true+, then if it is specified on the the commandline the value will be +false+.
+  ## [+:default+] Set the default value for an argument. Without a default value, the hash returned by #parse (and thus Trollop::options) will have a +nil+ value for this key unless the argument is given on the commandline. The argument type is derived automatically from the class of the default value given, so specifying a +:type+ is not necessary if a +:default+ is given. (But see below for an important caveat when +:multi+: is specified too.) If the argument is a flag, and the default is set to +true+, then if it is specified on the commandline the value will be +false+.
   ## [+:required+] If set to +true+, the argument must be provided on the commandline.
   ## [+:multi+] If set to +true+, allows multiple occurrences of the option on the commandline. Otherwise, only a single instance of the option is allowed. (Note that this is different from taking multiple parameters. See below.)
   ##
@@ -267,7 +273,7 @@ class Parser
     syms.each { |sym| raise ArgumentError, "unknown option '#{sym}'" unless @specs[sym] }
     @constraints << [:depends, syms]
   end
-  
+
   ## Marks two (or more!) options as conflicting.
   def conflicts *syms
     syms.each { |sym| raise ArgumentError, "unknown option '#{sym}'" unless @specs[sym] }
@@ -448,8 +454,8 @@ class Parser
         # chronic is not available
       end
       time ? Date.new(time.year, time.month, time.day) : Date.parse(param)
-    rescue ArgumentError => e
-      raise CommandlineError, "option '#{arg}' needs a date"
+    rescue ArgumentError
+      raise CommandlineError, "option '#{arg}' needs a date", $!.backtrace
     end
   end
 
@@ -459,7 +465,7 @@ class Parser
           # call this unless the cursor's at the beginning of a line.
 
     left = {}
-    @specs.each do |name, spec| 
+    @specs.each do |name, spec|
       left[name] = "--#{spec[:long]}" +
         (spec[:short] && spec[:short] != :none ? ", -#{spec[:short]}" : "") +
         case spec[:type]
@@ -645,7 +651,7 @@ private
       begin
         open param
       rescue SystemCallError => e
-        raise CommandlineError, "file or url for option '#{arg}' cannot be opened: #{e.message}"
+        raise CommandlineError, "file or url for option '#{arg}' cannot be opened: #{e.message}", e.backtrace
       end
     end
   end
@@ -680,7 +686,7 @@ private
     start = 0
     ret = []
     until start > str.length
-      nextt = 
+      nextt =
         if start + width >= str.length
           str.length
         else
@@ -813,3 +819,6 @@ end
 module_function :options, :die, :with_standard_exception_handling
 
 end # module
+end
+end
+end

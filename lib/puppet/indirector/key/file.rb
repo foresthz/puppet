@@ -7,6 +7,10 @@ class Puppet::SSL::Key::File < Puppet::Indirector::SslFile
   store_in :privatekeydir
   store_ca_at :cakey
 
+  def allow_remote_requests?
+    false
+  end
+
   # Where should we store the public key?
   def public_key_path(name)
     if ca?(name)
@@ -20,12 +24,13 @@ class Puppet::SSL::Key::File < Puppet::Indirector::SslFile
   def destroy(request)
     super
 
-    return unless FileTest.exist?(public_key_path(request.key))
+    key_path = Puppet::FileSystem.pathname(public_key_path(request.key))
+    return unless Puppet::FileSystem.exist?(key_path)
 
     begin
-      File.unlink(public_key_path(request.key))
+      Puppet::FileSystem.unlink(key_path)
     rescue => detail
-      raise Puppet::Error, "Could not remove #{request.key} public key: #{detail}"
+      raise Puppet::Error, "Could not remove #{request.key} public key: #{detail}", detail.backtrace
     end
   end
 
@@ -34,9 +39,11 @@ class Puppet::SSL::Key::File < Puppet::Indirector::SslFile
     super
 
     begin
-      Puppet.settings.writesub(:publickeydir, public_key_path(request.key)) { |f| f.print request.instance.content.public_key.to_pem }
+      Puppet.settings.setting(:publickeydir).open_file(public_key_path(request.key), 'w') do |f|
+        f.print request.instance.content.public_key.to_pem
+      end
     rescue => detail
-      raise Puppet::Error, "Could not write #{request.key}: #{detail}"
+      raise Puppet::Error, "Could not write #{request.key}: #{detail}", detail.backtrace
     end
   end
 end

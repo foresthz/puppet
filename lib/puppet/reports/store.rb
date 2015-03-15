@@ -1,6 +1,8 @@
 require 'puppet'
 require 'fileutils'
-require 'tempfile'
+require 'puppet/util'
+
+SEPARATOR = [Regexp.escape(File::SEPARATOR.to_s), Regexp.escape(File::ALT_SEPARATOR.to_s)].join
 
 Puppet::Reports.register_report(:store) do
   desc "Store the yaml report on disk.  Each host sends its report as a YAML dump
@@ -11,13 +13,11 @@ Puppet::Reports.register_report(:store) do
     default report)."
 
   def process
-    # We don't want any tracking back in the fs.  Unlikely, but there
-    # you go.
-    client = self.host.gsub("..",".")
+    validate_host(host)
 
-    dir = File.join(Puppet[:reportdir], client)
+    dir = File.join(Puppet[:reportdir], host)
 
-    if ! FileTest.exists?(dir)
+    if ! Puppet::FileSystem.exist?(dir)
       FileUtils.mkdir_p(dir)
       FileUtils.chmod_R(0750, dir)
     end
@@ -31,36 +31,38 @@ Puppet::Reports.register_report(:store) do
 
     file = File.join(dir, name)
 
-    f = Tempfile.new(name, dir)
     begin
-      begin
-        f.chmod(0640)
-        f.print to_yaml
-      ensure
-        f.close
+      Puppet::Util.replace_file(file, 0640) do |fh|
+        fh.print to_yaml
       end
-      FileUtils.mv(f.path, file)
     rescue => detail
-      Puppet.log_exception(detail, "Could not write report for #{client} at #{file}: #{detail}")
+       Puppet.log_exception(detail, "Could not write report for #{host} at #{file}: #{detail}")
     end
 
     # Only testing cares about the return value
     file
   end
 
-  # removes all reports for a given host
+  # removes all reports for a given host?
   def self.destroy(host)
-    client = host.gsub("..",".")
-    dir = File.join(Puppet[:reportdir], client)
+    validate_host(host)
 
-    if File.exists?(dir)
+    dir = File.join(Puppet[:reportdir], host)
+
+    if Puppet::FileSystem.exist?(dir)
       Dir.entries(dir).each do |file|
         next if ['.','..'].include?(file)
         file = File.join(dir, file)
-        File.unlink(file) if File.file?(file)
+        Puppet::FileSystem.unlink(file) if File.file?(file)
       end
       Dir.rmdir(dir)
     end
   end
-end
 
+  def validate_host(host)
+    if host =~ Regexp.union(/[#{SEPARATOR}]/, /\A\.\.?\Z/)
+      raise ArgumentError, "Invalid node name #{host.inspect}"
+    end
+  end
+  module_function :validate_host
+end

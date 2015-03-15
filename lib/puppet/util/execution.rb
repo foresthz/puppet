@@ -1,28 +1,60 @@
+require 'puppet/file_system/uniquefile'
+
 module Puppet
   require 'rbconfig'
 
-  # A command failed to execute.
   require 'puppet/error'
+  # A command failed to execute.
+  # @api public
   class ExecutionFailure < Puppet::Error
   end
+end
 
-module Util::Execution
+# This module defines methods for execution of system commands. It is intented for inclusion
+# in classes that needs to execute system commands.
+# @api public
+module Puppet::Util::Execution
 
-  # Execute the provided command with STDIN connected to a pipe, yielding the
-  # pipe object.  That allows data to be fed to that subprocess.
+  # This is the full output from a process. The object itself (a String) is the
+  # stdout of the process.
   #
-  # The command can be a simple string, which is executed as-is, or an Array,
-  # which is treated as a set of command arguments to pass through.#
-  #
-  # In all cases this is passed directly to the shell, and STDOUT and STDERR
-  # are connected together during execution.
-  def self.execpipe(command, failonfail = true)
-    if respond_to? :debug
-      debug "Executing '#{command}'"
-    else
-      Puppet.debug "Executing '#{command}'"
+  # @api public
+  class ProcessOutput < String
+    # @return [Integer] The exit status of the process
+    # @api public
+    attr_reader :exitstatus
+
+    # @api private
+    def initialize(value,exitstatus)
+      super(value)
+      @exitstatus = exitstatus
     end
+  end
 
+  # The command can be a simple string, which is executed as-is, or an Array,
+  # which is treated as a set of command arguments to pass through.
+  #
+  # In either case, the command is passed directly to the shell, STDOUT and
+  # STDERR are connected together, and STDOUT will be streamed to the yielded
+  # pipe.
+  #
+  # @param command [String, Array<String>] the command to execute as one string,
+  #   or as parts in an array. The parts of the array are joined with one
+  #   separating space between each entry when converting to the command line
+  #   string to execute.
+  # @param failonfail [Boolean] (true) if the execution should fail with
+  #   Exception on failure or not.
+  # @yield [pipe] to a block executing a subprocess
+  # @yieldparam pipe [IO] the opened pipe
+  # @yieldreturn [String] the output to return
+  # @raise [Puppet::ExecutionFailure] if the executed chiled process did not
+  #   exit with status == 0 and `failonfail` is `true`.
+  # @return [String] a string with the output from the subprocess executed by
+  #   the given block
+  #
+  # @see Kernel#open for `mode` values
+  # @api public
+  def self.execpipe(command, failonfail = true)
     # Paste together an array with spaces.  We used to paste directly
     # together, no spaces, which made for odd invocations; the user had to
     # include whitespace between arguments.
@@ -31,56 +63,91 @@ module Util::Execution
     # shell anyhow, while no spaces makes for a small developer cost every
     # time this is invoked. --daniel 2012-02-13
     command_str = command.respond_to?(:join) ? command.join(' ') : command
-    output = open("| #{command_str} 2>&1") do |pipe|
-      yield pipe
+
+    if respond_to? :debug
+      debug "Executing '#{command_str}'"
+    else
+      Puppet.debug "Executing '#{command_str}'"
     end
 
-    if failonfail
-      unless $CHILD_STATUS == 0
-        raise ExecutionFailure, output
+    # force the run of the command with
+    # the user/system locale to "C" (via environment variables LANG and LC_*)
+    # it enables to have non localized output for some commands and therefore
+    # a predictable output
+    english_env = ENV.to_hash.merge( {'LANG' => 'C', 'LC_ALL' => 'C'} )
+    output = Puppet::Util.withenv(english_env) do
+      open("| #{command_str} 2>&1") do |pipe|
+        yield pipe
       end
+    end
+
+    if failonfail && exitstatus != 0
+      raise Puppet::ExecutionFailure, output
     end
 
     output
   end
 
+  def self.exitstatus
+    $CHILD_STATUS.exitstatus
+  end
+  private_class_method :exitstatus
+
+  # Wraps execution of {execute} with mapping of exception to given exception (and output as argument).
+  # @raise [exception] under same conditions as {execute}, but raises the given `exception` with the output as argument
+  # @return (see execute)
+  # @api public
   def self.execfail(command, exception)
     output = execute(command)
     return output
-  rescue ExecutionFailure
-    raise exception, output
+  rescue Puppet::ExecutionFailure
+    raise exception, output, exception.backtrace
   end
 
+  # Default empty options for {execute}
+  NoOptionsSpecified = {}
 
-
-  # Execute the desired command, and return the status and output.
+  # Executes the desired command, and return the status and output.
   # def execute(command, options)
-  # [command] an Array or String representing the command to execute. If it is
+  # @param command [Array<String>, String] the command to execute. If it is
   #   an Array the first element should be the executable and the rest of the
   #   elements should be the individual arguments to that executable.
-  # [options] a Hash optionally containing any of the following keys:
-  #   :failonfail (default true) -- if this value is set to true, then this method will raise an error if the
-  #      command is not executed successfully.
-  #   :uid (default nil) -- the user id of the user that the process should be run as
-  #   :gid (default nil) -- the group id of the group that the process should be run as
-  #   :combine (default true) -- sets whether or not to combine stdout/stderr in the output
-  #   :stdinfile (default nil) -- sets a file that can be used for stdin. Passing a string for stdin is not currently
-  #      supported.
-  #   :squelch (default false) -- if true, ignore stdout / stderr completely
-  #   :override_locale (default true) -- by default (and if this option is set to true), we will temporarily override
-  #     the user/system locale to "C" (via environment variables LANG and LC_*) while we are executing the command.
-  #     This ensures that the output of the command will be formatted consistently, making it predictable for parsing.
-  #     Passing in a value of false for this option will allow the command to be executed using the user/system locale.
-  #   :custom_environment (default {}) -- a hash of key/value pairs to set as environment variables for the duration
-  #     of the command
-  def self.execute(command, options = {})
+  # @param options [Hash] a Hash of options
+  # @option options [Boolean]  :failonfail if this value is set to true, then this method will raise an error if the
+  #   command is not executed successfully.
+  # @option options [Integer, String] :uid (nil) the user id of the user that the process should be run as. Will be ignored if the
+  #   user id matches the effective user id of the current process.
+  # @option options [Integer, String] :gid (nil) the group id of the group that the process should be run as. Will be ignored if the
+  #   group id matches the effective group id of the current process.
+  # @option options [Boolean] :combine sets whether or not to combine stdout/stderr in the output
+  # @option options [String] :stdinfile (nil) sets a file that can be used for stdin. Passing a string for stdin is not currently
+  #   supported.
+  # @option options [Boolean] :squelch (true) if true, ignore stdout / stderr completely.
+  # @option options [Boolean] :override_locale (true) by default (and if this option is set to true), we will temporarily override
+  #   the user/system locale to "C" (via environment variables LANG and LC_*) while we are executing the command.
+  #   This ensures that the output of the command will be formatted consistently, making it predictable for parsing.
+  #   Passing in a value of false for this option will allow the command to be executed using the user/system locale.
+  # @option options [Hash<{String => String}>] :custom_environment ({}) a hash of key/value pairs to set as environment variables for the duration
+  #   of the command.
+  # @return [Puppet::Util::Execution::ProcessOutput] output as specified by options
+  # @raise [Puppet::ExecutionFailure] if the executed chiled process did not exit with status == 0 and `failonfail` is
+  #   `true`.
+  # @note Unfortunately, the default behavior for failonfail and combine (since
+  #   0.22.4 and 0.24.7, respectively) depend on whether options are specified
+  #   or not. If specified, then failonfail and combine default to false (even
+  #   when the options specified are neither failonfail nor combine). If no
+  #   options are specified, then failonfail and combine default to true.
+  # @comment See commits efe9a833c and d32d7f30
+  # @api public
+  #
+  def self.execute(command, options = NoOptionsSpecified)
     # specifying these here rather than in the method signature to allow callers to pass in a partial
     # set of overrides without affecting the default values for options that they don't pass in
     default_options = {
-        :failonfail => true,
+        :failonfail => NoOptionsSpecified.equal?(options),
         :uid => nil,
         :gid => nil,
-        :combine => true,
+        :combine => NoOptionsSpecified.equal?(options),
         :stdinfile => nil,
         :squelch => false,
         :override_locale => true,
@@ -96,53 +163,73 @@ module Util::Execution
       str = command
     end
 
+    user_log_s = ''
+    if options[:uid]
+      user_log_s << " uid=#{options[:uid]}"
+    end
+    if options[:gid]
+      user_log_s << " gid=#{options[:gid]}"
+    end
+    if user_log_s != ''
+      user_log_s.prepend(' with')
+    end
+
     if respond_to? :debug
-      debug "Executing '#{str}'"
+      debug "Executing#{user_log_s}: '#{str}'"
     else
-      Puppet.debug "Executing '#{str}'"
+      Puppet.debug "Executing#{user_log_s}: '#{str}'"
     end
 
     null_file = Puppet.features.microsoft_windows? ? 'NUL' : '/dev/null'
 
-    stdin = File.open(options[:stdinfile] || null_file, 'r')
-    stdout = options[:squelch] ? File.open(null_file, 'w') : Tempfile.new('puppet')
-    stderr = options[:combine] ? stdout : File.open(null_file, 'w')
+    begin
+      stdin = File.open(options[:stdinfile] || null_file, 'r')
+      stdout = options[:squelch] ? File.open(null_file, 'w') : Puppet::FileSystem::Uniquefile.new('puppet')
+      stderr = options[:combine] ? stdout : File.open(null_file, 'w')
 
-    exec_args = [command, options, stdin, stdout, stderr]
+      exec_args = [command, options, stdin, stdout, stderr]
 
-    if execution_stub = Puppet::Util::ExecutionStub.current_value
-      return execution_stub.call(*exec_args)
-    elsif Puppet.features.posix?
-      child_pid = execute_posix(*exec_args)
-      exit_status = Process.waitpid2(child_pid).last.exitstatus
-    elsif Puppet.features.microsoft_windows?
-      process_info = execute_windows(*exec_args)
-      begin
-        exit_status = Puppet::Util::Windows::Process.wait_process(process_info.process_handle)
-      ensure
-        Process.CloseHandle(process_info.process_handle)
-        Process.CloseHandle(process_info.thread_handle)
+      if execution_stub = Puppet::Util::ExecutionStub.current_value
+        return execution_stub.call(*exec_args)
+      elsif Puppet.features.posix?
+        child_pid = execute_posix(*exec_args)
+        exit_status = Process.waitpid2(child_pid).last.exitstatus
+      elsif Puppet.features.microsoft_windows?
+        process_info = execute_windows(*exec_args)
+        begin
+          exit_status = Puppet::Util::Windows::Process.wait_process(process_info.process_handle)
+        ensure
+          FFI::WIN32.CloseHandle(process_info.process_handle)
+          FFI::WIN32.CloseHandle(process_info.thread_handle)
+        end
+      end
+
+      [stdin, stdout, stderr].each {|io| io.close rescue nil}
+
+      # read output in if required
+      unless options[:squelch]
+        output = wait_for_output(stdout)
+        Puppet.warning "Could not get output" unless output
+      end
+
+      if options[:failonfail] and exit_status != 0
+        raise Puppet::ExecutionFailure, "Execution of '#{str}' returned #{exit_status}: #{output.strip}"
+      end
+    ensure
+      if !options[:squelch] && stdout
+        # if we opened a temp file for stdout, we need to clean it up.
+        stdout.close!
       end
     end
 
-    [stdin, stdout, stderr].each {|io| io.close rescue nil}
-
-    # read output in if required
-    unless options[:squelch]
-      output = wait_for_output(stdout)
-      Puppet.warning "Could not get output" unless output
-    end
-
-    if options[:failonfail] and exit_status != 0
-      raise ExecutionFailure, "Execution of '#{str}' returned #{exit_status}: #{output}"
-    end
-
-    output
+    Puppet::Util::Execution::ProcessOutput.new(output || '', exit_status)
   end
 
-  # get the path to the ruby executable (available via Config object, even if
-  # it's not in the PATH... so this is slightly safer than just using
-  # Puppet::Util.which)
+  # Returns the path to the ruby executable (available via Config object, even if
+  # it's not in the PATH... so this is slightly safer than just using Puppet::Util.which)
+  # @return [String] the path to the Ruby executable
+  # @api private
+  #
   def self.ruby_path()
     File.join(RbConfig::CONFIG['bindir'],
               RbConfig::CONFIG['ruby_install_name'] + RbConfig::CONFIG['EXEEXT']).
@@ -155,7 +242,10 @@ module Util::Execution
   end
 
 
-  # this is private method, see call to private_class_method after method definition
+  # This is private method.
+  # @comment see call to private_class_method after method definition
+  # @api private
+  #
   def self.execute_posix(command, options, stdin, stdout, stderr)
     child_pid = Puppet::Util.safe_posix_fork(stdin, stdout, stderr) do
 
@@ -201,7 +291,10 @@ module Util::Execution
   private_class_method :execute_posix
 
 
-  # this is private method, see call to private_class_method after method definition
+  # This is private method.
+  # @comment see call to private_class_method after method definition
+  # @api private
+  #
   def self.execute_windows(command, options, stdin, stdout, stderr)
     command = command.map do |part|
       part.include?(' ') ? %Q["#{part.gsub(/"/, '\"')}"] : part
@@ -215,7 +308,10 @@ module Util::Execution
   private_class_method :execute_windows
 
 
-  # this is private method, see call to private_class_method after method definition
+  # This is private method.
+  # @comment see call to private_class_method after method definition
+  # @api private
+  #
   def self.wait_for_output(stdout)
     # Make sure the file's actually been written.  This is basically a race
     # condition, and is probably a horrible way to handle it, but, well, oh
@@ -224,12 +320,14 @@ module Util::Execution
     #  about a race condition because all of the places that we call this from are preceded by a call to "waitpid2",
     #  meaning that the processes responsible for writing the file have completed before we get here.)
     2.times do |try|
-      if File.exists?(stdout.path)
-        output = stdout.open.read
-
-        stdout.close(true)
-
-        return output
+      if Puppet::FileSystem.exist?(stdout.path)
+        stdout.open
+        begin
+          return stdout.read
+        ensure
+          stdout.close
+          stdout.unlink
+        end
       else
         time_to_sleep = try / 2.0
         Puppet.warning "Waiting for output; will sleep #{time_to_sleep} seconds"
@@ -239,9 +337,4 @@ module Util::Execution
     nil
   end
   private_class_method :wait_for_output
-
-
-
-
-end
 end

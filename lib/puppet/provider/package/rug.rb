@@ -5,7 +5,6 @@ Puppet::Type.type(:package).provide :rug, :parent => :rpm do
 
   commands :rug => "/usr/bin/rug"
   commands :rpm => "rpm"
-  defaultfor :operatingsystem => [:suse, :sles]
   confine    :operatingsystem => [:suse, :sles]
 
   # Install a package using 'rug'.
@@ -22,7 +21,7 @@ Puppet::Type.type(:package).provide :rug, :parent => :rpm do
       # Add the package version
       wanted += "-#{should}"
     end
-    output = rug "--quiet", :install, "-y", wanted
+    rug "--quiet", :install, "-y", wanted
 
     unless self.query
       raise Puppet::ExecutionFailure.new(

@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/application/filebucket'
@@ -10,20 +10,20 @@ describe Puppet::Application::Filebucket do
   end
 
   it "should declare a get command" do
-    @filebucket.should respond_to(:get)
+    expect(@filebucket).to respond_to(:get)
   end
 
   it "should declare a backup command" do
-    @filebucket.should respond_to(:backup)
+    expect(@filebucket).to respond_to(:backup)
   end
 
   it "should declare a restore command" do
-    @filebucket.should respond_to(:restore)
+    expect(@filebucket).to respond_to(:restore)
   end
 
   [:bucket, :debug, :local, :remote, :verbose].each do |option|
     it "should declare handle_#{option} method" do
-      @filebucket.should respond_to("handle_#{option}".to_sym)
+      expect(@filebucket).to respond_to("handle_#{option}".to_sym)
     end
 
     it "should store argument value when calling handle_#{option}" do
@@ -57,13 +57,13 @@ describe Puppet::Application::Filebucket do
     it "should set log level to debug if --debug was passed" do
       @filebucket.options.stubs(:[]).with(:debug).returns(true)
       @filebucket.setup
-      Puppet::Log.level.should == :debug
+      expect(Puppet::Log.level).to eq(:debug)
     end
 
     it "should set log level to info if --verbose was passed" do
       @filebucket.options.stubs(:[]).with(:verbose).returns(true)
       @filebucket.setup
-      Puppet::Log.level.should == :info
+      expect(Puppet::Log.level).to eq(:info)
     end
 
     it "should print puppet config if asked to in Puppet config" do
@@ -78,23 +78,24 @@ describe Puppet::Application::Filebucket do
     end
 
     describe "with local bucket" do
+      let(:path) { File.expand_path("path") }
 
       before :each do
         @filebucket.options.stubs(:[]).with(:local).returns(true)
       end
 
       it "should create a client with the default bucket if none passed" do
-        Puppet.stubs(:[]).with(:bucketdir).returns("path")
+        Puppet[:bucketdir] = path
 
-        Puppet::FileBucket::Dipper.expects(:new).with { |h| h[:Path] == "path" }
+        Puppet::FileBucket::Dipper.expects(:new).with { |h| h[:Path] == path }
 
         @filebucket.setup
       end
 
       it "should create a local Dipper with the given bucket" do
-        @filebucket.options.stubs(:[]).with(:bucket).returns("path")
+        @filebucket.options.stubs(:[]).with(:bucket).returns(path)
 
-        Puppet::FileBucket::Dipper.expects(:new).with { |h| h[:Path] == "path" }
+        Puppet::FileBucket::Dipper.expects(:new).with { |h| h[:Path] == path }
 
         @filebucket.setup
       end
@@ -104,7 +105,7 @@ describe Puppet::Application::Filebucket do
     describe "with remote bucket" do
 
       it "should create a remote Client to the configured server" do
-        Puppet.stubs(:[]).with(:server).returns("puppet.reductivelabs.com")
+        Puppet[:server] = "puppet.reductivelabs.com"
 
         Puppet::FileBucket::Dipper.expects(:new).with { |h| h[:Server] == "puppet.reductivelabs.com" }
 
@@ -172,12 +173,12 @@ describe Puppet::Application::Filebucket do
     describe "the command backup" do
       it "should fail if no arguments are specified" do
         @filebucket.stubs(:args).returns([])
-        lambda { @filebucket.backup }.should raise_error
+        expect { @filebucket.backup }.to raise_error
       end
 
       it "should call the client backup method for each given parameter" do
         @filebucket.stubs(:puts)
-        FileTest.stubs(:exists?).returns(true)
+        Puppet::FileSystem.stubs(:exist?).returns(true)
         FileTest.stubs(:readable?).returns(true)
         @filebucket.stubs(:args).returns(["file1", "file2"])
 

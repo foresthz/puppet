@@ -1,243 +1,402 @@
-#! /usr/bin/env ruby -S rspec
-
 require 'spec_helper'
+require 'puppet'
 
-
-describe Puppet::Type.type(:yumrepo) do
-  include PuppetSpec::Files
-
-  describe "When validating attributes" do
-
-    it "should have a 'name' parameter'" do
-      Puppet::Type.type(:yumrepo).new(:name => "puppetlabs")[:name].should == "puppetlabs"
-    end
-
-    [:baseurl, :cost, :descr, :enabled, :enablegroups, :exclude, :failovermethod, :gpgcheck, :gpgkey, :http_caching, 
-       :include, :includepkgs, :keepalive, :metadata_expire, :mirrorlist, :priority, :protect, :proxy, :proxy_username, :proxy_password, :timeout, 
-       :sslcacert, :sslverify, :sslclientcert, :sslclientkey].each do |param|
-      it "should have a '#{param}' parameter" do
-        Puppet::Type.type(:yumrepo).attrtype(param).should == :property
-     end
-    end
-
+shared_examples_for "a yumrepo parameter that can be absent" do |param|
+  it "can be set as :absent" do
+    described_class.new(:name => 'puppetlabs', param => :absent)
   end
-
-  describe "When validating attribute values" do
-    
-    [:cost, :enabled, :enablegroups, :failovermethod, :gpgcheck, :http_caching, :keepalive, :metadata_expire, :priority, :protect, :timeout].each do |param|
-      it "should support :absent as a value to '#{param}' parameter" do
-        Puppet::Type.type(:yumrepo).new(:name => "puppetlabs.repo", param => :absent)
-     end
-    end
-
-    [:cost, :enabled, :enablegroups, :gpgcheck, :keepalive, :metadata_expire, :priority, :protect, :timeout].each do |param|
-      it "should fail if '#{param}' is not a number" do
-        lambda { Puppet::Type.type(:yumrepo).new(:name => "puppetlabs", param => "notanumber") }.should raise_error
-     end
-    end
-
-    [:enabled, :enabledgroups, :gpgcheck, :keepalive, :protect].each do |param|
-      it "should fail if '#{param}' does not have one of the following values (0|1)" do
-        lambda { Puppet::Type.type(:yumrepo).new(:name => "puppetlabs", param => "2") }.should raise_error
-      end
-    end
-    
-    it "should fail if 'failovermethod' does not have one of the following values (roundrobin|priority)" do
-      lambda { Puppet::Type.type(:yumrepo).new(:name => "puppetlabs", :failovermethod => "notavalidvalue") }.should raise_error
-    end
-
-    it "should fail if 'http_caching' does not have one of the following values (packages|all|none)" do
-      lambda { Puppet::Type.type(:yumrepo).new(:name => "puppetlabs", :http_caching => "notavalidvalue") }.should raise_error
-    end
-
-    it "should fail if 'sslverify' does not have one of the following values (True|False)" do
-      lambda { Puppet::Type.type(:yumrepo).new(:name => "puppetlabs", :sslverify => "notavalidvalue") }.should raise_error
-    end
-
-    it "should succeed if 'sslverify' has one of the following values (True|False)" do
-      Puppet::Type.type(:yumrepo).new(:name => "puppetlabs", :sslverify => "True")[:sslverify].should == "True"
-      Puppet::Type.type(:yumrepo).new(:name => "puppetlabs", :sslverify => "False")[:sslverify].should == "False"
-    end
-
+  it "can be set as \"absent\"" do
+    described_class.new(:name => 'puppetlabs', param => 'absent')
   end
-
-  # these tests were ported from the old spec/unit/type/yumrepo_spec.rb, pretty much verbatim
-  describe "When manipulating config file" do
-
-
-    def make_repo(name, hash={})
-      hash[:name] = name
-      Puppet::Type.type(:yumrepo).new(hash)
-    end
-
-    def all_sections(inifile)
-      sections = []
-      inifile.each_section { |section| sections << section.name }
-      sections.sort
-    end
-
-    def create_data_files()
-      File.open(File.join(@yumdir, "fedora.repo"), "w") do |f|
-        f.print(FEDORA_REPO_FILE)
-      end
-
-      File.open(File.join(@yumdir, "fedora-devel.repo"), "w") do |f|
-        f.print(FEDORA_DEVEL_REPO_FILE)
-      end
-    end
-
-
-
-    before(:each) do
-      @yumdir = tmpdir("yumrepo_spec_tmpdir")
-      @yumconf = File.join(@yumdir, "yum.conf")
-      File.open(@yumconf, "w") do |f|
-        f.print "[main]\nreposdir=#{@yumdir} /no/such/dir\n"
-      end
-      Puppet::Type.type(:yumrepo).yumconf = @yumconf
-
-      # It needs to be reset each time, otherwise the cache is used.
-      Puppet::Type.type(:yumrepo).inifile = nil
-    end
-
-
-    it "should be able to create a valid config file" do
-      values = {
-          :descr => "Fedora Core $releasever - $basearch - Base",
-          :baseurl => "http://example.com/yum/$releasever/$basearch/os/",
-          :enabled => "1",
-          :gpgcheck => "1",
-          :includepkgs => "absent",
-          :gpgkey => "file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora",
-          :proxy => "http://proxy.example.com:80/",
-          :proxy_username => "username",
-          :proxy_password => "password"
-      }
-      repo = make_repo("base", values)
-
-
-      catalog = Puppet::Resource::Catalog.new
-      # Stop Puppet from doing a bunch of magic; might want to think about a util for specs that handles this
-      catalog.host_config = false
-      catalog.add_resource(repo)
-      catalog.apply
-
-      inifile = Puppet::Type.type(:yumrepo).read
-      sections = all_sections(inifile)
-      sections.should == ['base', 'main']
-      text = inifile["base"].format
-      text.should == EXPECTED_CONTENTS_FOR_CREATED_FILE
-    end
-
-
-    # Modify one existing section
-    it "should be able to modify an existing config file" do
-
-      create_data_files
-
-      devel = make_repo("development", { :descr => "New description" })
-      current_values = devel.retrieve
-
-      devel[:name].should == "development"
-      current_values[devel.property(:descr)].should == 'Fedora Core $releasever - Development Tree'
-      devel.property(:descr).should == 'New description'
-
-      catalog = Puppet::Resource::Catalog.new
-      # Stop Puppet from doing a bunch of magic; might want to think about a util for specs that handles this
-      catalog.host_config = false
-      catalog.add_resource(devel)
-      catalog.apply
-
-      inifile = Puppet::Type.type(:yumrepo).read
-      inifile['development']['name'].should == 'New description'
-      inifile['base']['name'].should == 'Fedora Core $releasever - $basearch - Base'
-      inifile['base']['exclude'].should == "foo\n  bar\n  baz"
-      all_sections(inifile).should == ['base', 'development', 'main']
-    end
-
-
-    # Delete mirrorlist by setting it to :absent and enable baseurl
-    it "should support 'absent' value" do
-      create_data_files
-
-      baseurl = 'http://example.com/'
-
-      devel = make_repo(
-          "development",
-          { :mirrorlist => 'absent',
-
-            :baseurl => baseurl })
-      devel.retrieve
-
-      catalog = Puppet::Resource::Catalog.new
-      # Stop Puppet from doing a bunch of magic; might want to think about a util for specs that handles this
-      catalog.host_config = false
-      catalog.add_resource(devel)
-      catalog.apply
-
-      inifile = Puppet::Type.type(:yumrepo).read
-      sec = inifile["development"]
-      sec["mirrorlist"].should == nil
-      sec["baseurl"].should == baseurl
-    end
-
-
-  end
-
-
 end
 
+shared_examples_for "a yumrepo parameter that expects a natural value" do |param|
+  it "accepts a valid positive integer" do
+    instance = described_class.new(:name => 'puppetlabs', param => '12')
+    expect(instance[param]).to eq '12'
+  end
+  it "rejects invalid negative integer" do
+    expect {
+      described_class.new(
+        :name => 'puppetlabs',
+        param => '-12'
+      )
+    }.to raise_error(Puppet::ResourceError, /Parameter #{param} failed/)
+  end
+  it "rejects invalid non-integer" do
+    expect {
+      described_class.new(
+        :name => 'puppetlabs',
+        param => 'I\'m a six'
+      )
+    }.to raise_error(Puppet::ResourceError, /Parameter #{param} failed/)
+  end
+  it "rejects invalid string with integers inside" do
+    expect {
+      described_class.new(
+        :name => 'puppetlabs',
+        param => 'I\'m a 6'
+      )
+    }.to raise_error(Puppet::ResourceError, /Parameter #{param} failed/)
+  end
+end
 
-EXPECTED_CONTENTS_FOR_CREATED_FILE = <<'EOF'
-[base]
-name=Fedora Core $releasever - $basearch - Base
-baseurl=http://example.com/yum/$releasever/$basearch/os/
-enabled=1
-gpgcheck=1
-gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora
-proxy=http://proxy.example.com:80/
-proxy_username=username
-proxy_password=password
-EOF
+shared_examples_for "a yumrepo parameter that expects a boolean parameter" do |param|
+  valid_values = %w[True False 0 1 No Yes]
+
+  valid_values.each do |value|
+    it "accepts a valid value of #{value}" do
+      instance = described_class.new(:name => 'puppetlabs', param => value)
+      expect(instance[param]).to eq value
+    end
+    it "accepts #{value} downcased to #{value.downcase}" do
+      instance = described_class.new(:name => 'puppetlabs', param => value.downcase)
+      expect(instance[param]).to eq value.downcase
+    end
+    it "fails on valid value #{value} contained in another value" do
+        expect {
+          described_class.new(
+            :name => 'puppetlabs',
+            param => "bla#{value}bla"
+          )
+        }.to raise_error(Puppet::ResourceError, /Parameter #{param} failed/)
+    end
+  end
+
+  it "rejects invalid boolean values" do
+    expect {
+      described_class.new(:name => 'puppetlabs', param => 'flase')
+    }.to raise_error(Puppet::ResourceError, /Parameter #{param} failed/)
+  end
+end
+
+shared_examples_for "a yumrepo parameter that accepts a single URL" do |param|
+  it "can accept a single URL" do
+    described_class.new(
+      :name => 'puppetlabs',
+      param => 'http://localhost/yumrepos'
+    )
+  end
+
+  it "fails if an invalid URL is provided" do
+    expect {
+      described_class.new(
+        :name => 'puppetlabs',
+        param => "that's no URL!"
+      )
+    }.to raise_error(Puppet::ResourceError, /Parameter #{param} failed/)
+  end
+
+  it "fails if a valid URL uses an invalid URI scheme" do
+    expect {
+      described_class.new(
+        :name => 'puppetlabs',
+        param => 'ldap://localhost/yumrepos'
+      )
+    }.to raise_error(Puppet::ResourceError, /Parameter #{param} failed/)
+  end
+end
+
+shared_examples_for "a yumrepo parameter that accepts multiple URLs" do |param|
+  it "can accept multiple URLs" do
+    described_class.new(
+      :name => 'puppetlabs',
+      param => 'http://localhost/yumrepos http://localhost/more-yumrepos'
+    )
+  end
+
+  it "fails if multiple URLs are given and one is invalid" do
+    expect {
+      described_class.new(
+        :name => 'puppetlabs',
+        param => "http://localhost/yumrepos That's no URL!"
+      )
+    }.to raise_error(Puppet::ResourceError, /Parameter #{param} failed/)
+  end
+end
+
+shared_examples_for "a yumrepo parameter that accepts kMG units" do |param|
+  %w[k M G].each do |unit|
+    it "can accept an integer with #{unit} units" do
+      described_class.new(
+        :name => 'puppetlabs',
+        param => "123#{unit}"
+      )
+    end
+  end
+
+  it "fails if wrong unit passed" do
+    expect {
+      described_class.new(
+        :name => 'puppetlabs',
+        param => '123J'
+      )
+    }.to raise_error(Puppet::ResourceError, /Parameter #{param} failed/)
+  end
+end
+
+describe Puppet::Type.type(:yumrepo) do
+  it "has :name as its namevar" do
+    expect(described_class.key_attributes).to eq [:name]
+  end
+
+  describe "validating" do
+
+    describe "name" do
+      it "is a valid parameter" do
+        instance = described_class.new(:name => 'puppetlabs')
+        expect(instance.name).to eq 'puppetlabs'
+      end
+    end
+
+    describe "target" do
+      it_behaves_like "a yumrepo parameter that can be absent", :target
+    end
+
+    describe "descr" do
+      it_behaves_like "a yumrepo parameter that can be absent", :descr
+    end
+
+    describe "mirrorlist" do
+      it_behaves_like "a yumrepo parameter that accepts a single URL", :mirrorlist
+      it_behaves_like "a yumrepo parameter that can be absent", :mirrorlist
+    end
+
+    describe "baseurl" do
+      it_behaves_like "a yumrepo parameter that can be absent", :baseurl
+      it_behaves_like "a yumrepo parameter that accepts a single URL", :baseurl
+      it_behaves_like "a yumrepo parameter that accepts multiple URLs", :baseurl
+    end
+
+    describe "enabled" do
+      it_behaves_like "a yumrepo parameter that expects a boolean parameter", :enabled
+      it_behaves_like "a yumrepo parameter that can be absent", :enabled
+    end
+
+    describe "gpgcheck" do
+      it_behaves_like "a yumrepo parameter that expects a boolean parameter", :gpgcheck
+      it_behaves_like "a yumrepo parameter that can be absent", :gpgcheck
+    end
+
+    describe "repo_gpgcheck" do
+      it_behaves_like "a yumrepo parameter that expects a boolean parameter", :repo_gpgcheck
+      it_behaves_like "a yumrepo parameter that can be absent", :repo_gpgcheck
+    end
+
+    describe "gpgkey" do
+      it_behaves_like "a yumrepo parameter that can be absent", :gpgkey
+      it_behaves_like "a yumrepo parameter that accepts a single URL", :gpgkey
+      it_behaves_like "a yumrepo parameter that accepts multiple URLs", :gpgkey
+    end
+
+    describe "include" do
+      it_behaves_like "a yumrepo parameter that can be absent", :include
+      it_behaves_like "a yumrepo parameter that accepts a single URL", :include
+    end
+
+    describe "exclude" do
+      it_behaves_like "a yumrepo parameter that can be absent", :exclude
+    end
+
+    describe "includepkgs" do
+      it_behaves_like "a yumrepo parameter that can be absent", :includepkgs
+    end
+
+    describe "enablegroups" do
+      it_behaves_like "a yumrepo parameter that expects a boolean parameter", :enablegroups
+      it_behaves_like "a yumrepo parameter that can be absent", :enablegroups
+    end
+
+    describe "failovermethod" do
+
+      %w[roundrobin priority].each do |value|
+        it "accepts a value of #{value}" do
+          described_class.new(:name => "puppetlabs", :failovermethod => value)
+        end
+        it "fails on valid value #{value} contained in another value" do
+          expect {
+            described_class.new(
+              :name => 'puppetlabs',
+              :failovermethod => "bla#{value}bla"
+            )
+          }.to raise_error(Puppet::ResourceError, /Parameter failovermethod failed/)
+        end
+      end
+
+      it "raises an error if an invalid value is given" do
+        expect {
+          described_class.new(:name => "puppetlabs", :failovermethod => "notavalidvalue")
+        }.to raise_error(Puppet::ResourceError, /Parameter failovermethod failed/)
+      end
+
+      it_behaves_like "a yumrepo parameter that can be absent", :failovermethod
+    end
+
+    describe "keepalive" do
+      it_behaves_like "a yumrepo parameter that expects a boolean parameter", :keepalive
+      it_behaves_like "a yumrepo parameter that can be absent", :keepalive
+    end
+
+    describe "http_caching" do
+      %w[packages all none].each do |value|
+        it "accepts a valid value of #{value}" do
+          described_class.new(:name => 'puppetlabs', :http_caching => value)
+        end
+        it "fails on valid value #{value} contained in another value" do
+          expect {
+            described_class.new(
+              :name => 'puppetlabs',
+              :http_caching => "bla#{value}bla"
+            )
+          }.to raise_error(Puppet::ResourceError, /Parameter http_caching failed/)
+        end
+      end
+
+      it "rejects invalid values" do
+        expect {
+          described_class.new(:name => 'puppetlabs', :http_caching => 'yes')
+        }.to raise_error(Puppet::ResourceError, /Parameter http_caching failed/)
+      end
+
+      it_behaves_like "a yumrepo parameter that can be absent", :http_caching
+    end
+
+    describe "timeout" do
+      it_behaves_like "a yumrepo parameter that can be absent", :timeout
+      it_behaves_like "a yumrepo parameter that expects a natural value", :timeout
+    end
+
+    describe "metadata_expire" do
+      it_behaves_like "a yumrepo parameter that can be absent", :metadata_expire
+      it_behaves_like "a yumrepo parameter that expects a natural value", :metadata_expire
+
+      it "accepts dhm units" do
+        %W[d h m].each do |unit|
+          described_class.new(
+            :name            => 'puppetlabs',
+            :metadata_expire => "123#{unit}"
+          )
+        end
+      end
+
+      it "accepts never as value" do
+        described_class.new(:name => 'puppetlabs', :metadata_expire => 'never')
+      end
+    end
+
+    describe "protect" do
+      it_behaves_like "a yumrepo parameter that expects a boolean parameter", :protect
+      it_behaves_like "a yumrepo parameter that can be absent", :protect
+    end
+
+    describe "priority" do
+      it_behaves_like "a yumrepo parameter that can be absent", :priority
+    end
+
+    describe "proxy" do
+      it_behaves_like "a yumrepo parameter that can be absent", :proxy
+      it "accepts _none_" do
+        described_class.new(
+          :name  => 'puppetlabs',
+          :proxy => "_none_"
+        )
+      end
+      it_behaves_like "a yumrepo parameter that accepts a single URL", :proxy
+    end
+
+    describe "proxy_username" do
+      it_behaves_like "a yumrepo parameter that can be absent", :proxy_username
+    end
+
+    describe "proxy_password" do
+      it_behaves_like "a yumrepo parameter that can be absent", :proxy_password
+    end
+
+    describe "s3_enabled" do
+      it_behaves_like "a yumrepo parameter that expects a boolean parameter", :s3_enabled
+      it_behaves_like "a yumrepo parameter that can be absent", :s3_enabled
+    end
+
+    describe "skip_if_unavailable" do
+      it_behaves_like "a yumrepo parameter that expects a boolean parameter", :skip_if_unavailable
+      it_behaves_like "a yumrepo parameter that can be absent", :skip_if_unavailable
+    end
+
+    describe "sslcacert" do
+      it_behaves_like "a yumrepo parameter that can be absent", :sslcacert
+    end
+
+    describe "sslverify" do
+      it_behaves_like "a yumrepo parameter that expects a boolean parameter", :sslverify
+      it_behaves_like "a yumrepo parameter that can be absent", :sslverify
+    end
+
+    describe "sslclientcert" do
+      it_behaves_like "a yumrepo parameter that can be absent", :sslclientcert
+    end
+
+    describe "sslclientkey" do
+      it_behaves_like "a yumrepo parameter that can be absent", :sslclientkey
+    end
+
+    describe "metalink" do
+      it_behaves_like "a yumrepo parameter that can be absent", :metalink
+      it_behaves_like "a yumrepo parameter that accepts a single URL", :metalink
+    end
+
+    describe "assumeyes" do
+      it_behaves_like "a yumrepo parameter that expects a boolean parameter", :assumeyes
+      it_behaves_like "a yumrepo parameter that can be absent", :assumeyes
+    end
 
 
-FEDORA_REPO_FILE = <<END
-[base]
-name=Fedora Core $releasever - $basearch - Base
-mirrorlist=http://fedora.redhat.com/download/mirrors/fedora-core-$releasever
-enabled=1
-gpgcheck=1
-gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora
-exclude=foo
-  bar
-  baz
-END
+    describe "cost" do
+      it_behaves_like "a yumrepo parameter that can be absent", :cost
+      it_behaves_like "a yumrepo parameter that expects a natural value", :cost
+    end
 
-FEDORA_DEVEL_REPO_FILE = <<END
-[development]
-# These packages are untested and still under development. This
-# repository is used for updates to test releases, and for
-# development of new releases.
-#
-# This repository can see significant daily turn over and can see major
-# functionality changes which cause unexpected problems with other
-# development packages. Please use these packages if you want to work
-# with the Fedora developers by testing these new development packages.
-#
-# fedora-test-list@redhat.com is available as a discussion forum for
-# testing and troubleshooting for development packages in conjunction
-# with new test releases.
-#
-# fedora-devel-list@redhat.com is available as a discussion forum for
-# testing and troubleshooting for development packages in conjunction
-# with developing new releases.
-#
-# Reportable issues should be filed at bugzilla.redhat.com
-# Product: Fedora Core
-# Version: devel
-name=Fedora Core $releasever - Development Tree
-#baseurl=http://download.fedora.redhat.com/pub/fedora/linux/core/development/$basearch/
-mirrorlist=http://fedora.redhat.com/download/mirrors/fedora-core-rawhide
-enabled=0
-gpgcheck=0
-END
+    describe "throttle" do
+      it_behaves_like "a yumrepo parameter that can be absent", :throttle
+      it_behaves_like "a yumrepo parameter that expects a natural value", :throttle
+      it_behaves_like "a yumrepo parameter that accepts kMG units", :throttle
+
+      it "accepts percentage as unit" do
+        described_class.new(
+          :name     => 'puppetlabs',
+          :throttle => '123%'
+        )
+      end
+    end
+
+    describe "bandwidth" do
+      it_behaves_like "a yumrepo parameter that can be absent", :bandwidth
+      it_behaves_like "a yumrepo parameter that expects a natural value", :bandwidth
+      it_behaves_like "a yumrepo parameter that accepts kMG units", :bandwidth
+    end
+
+    describe "gpgcakey" do
+      it_behaves_like "a yumrepo parameter that can be absent", :gpgcakey
+      it_behaves_like "a yumrepo parameter that accepts a single URL", :gpgcakey
+    end
+
+    describe "retries" do
+      it_behaves_like "a yumrepo parameter that can be absent", :retries
+      it_behaves_like "a yumrepo parameter that expects a natural value", :retries
+    end
+
+    describe "mirrorlist_expire" do
+      it_behaves_like "a yumrepo parameter that can be absent", :mirrorlist_expire
+      it_behaves_like "a yumrepo parameter that expects a natural value", :mirrorlist_expire
+    end
+
+    describe "deltarpm_percentage" do
+      it_behaves_like "a yumrepo parameter that can be absent", :deltarpm_percentage
+      it_behaves_like "a yumrepo parameter that expects a natural value", :deltarpm_percentage
+    end
+
+    describe "deltarpm_metadata_percentage" do
+      it_behaves_like "a yumrepo parameter that can be absent", :deltarpm_metadata_percentage
+      it_behaves_like "a yumrepo parameter that expects a natural value", :deltarpm_metadata_percentage
+    end
+  end
+end

@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/node'
@@ -21,12 +21,12 @@ describe Puppet::Node do
 
       terminus.expects(:path).with(@name).returns "/my/yaml/file"
 
-      FileTest.expects(:exist?).with("/my/yaml/file").returns false
-      Puppet::Node.indirection.find(@name).should be_nil
+      Puppet::FileSystem.expects(:exist?).with("/my/yaml/file").returns false
+      expect(Puppet::Node.indirection.find(@name)).to be_nil
     end
 
     it "should have an ldap terminus" do
-      Puppet::Node.indirection.terminus(:ldap).should_not be_nil
+      expect(Puppet::Node.indirection.terminus(:ldap)).not_to be_nil
     end
 
     it "should be able to use the plain terminus" do
@@ -37,42 +37,45 @@ describe Puppet::Node do
 
       Puppet::Node.expects(:new).with(@name).returns @node
 
-      Puppet::Node.indirection.find(@name).should equal(@node)
+      expect(Puppet::Node.indirection.find(@name)).to equal(@node)
     end
 
     describe "and using the memory terminus" do
       before do
         @name = "me"
-        @old_terminus = Puppet::Node.indirection.terminus_class
         @terminus = Puppet::Node.indirection.terminus(:memory)
         Puppet::Node.indirection.stubs(:terminus).returns @terminus
         @node = Puppet::Node.new(@name)
       end
 
+      after do
+        @terminus.instance_variable_set(:@instances, {})
+      end
+
       it "should find no nodes by default" do
-        Puppet::Node.indirection.find(@name).should be_nil
+        expect(Puppet::Node.indirection.find(@name)).to be_nil
       end
 
       it "should be able to find nodes that were previously saved" do
         Puppet::Node.indirection.save(@node)
-        Puppet::Node.indirection.find(@name).should equal(@node)
+        expect(Puppet::Node.indirection.find(@name)).to equal(@node)
       end
 
       it "should replace existing saved nodes when a new node with the same name is saved" do
         Puppet::Node.indirection.save(@node)
         two = Puppet::Node.new(@name)
         Puppet::Node.indirection.save(two)
-        Puppet::Node.indirection.find(@name).should equal(two)
+        expect(Puppet::Node.indirection.find(@name)).to equal(two)
       end
 
       it "should be able to remove previously saved nodes" do
         Puppet::Node.indirection.save(@node)
         Puppet::Node.indirection.destroy(@node.name)
-        Puppet::Node.indirection.find(@name).should be_nil
+        expect(Puppet::Node.indirection.find(@name)).to be_nil
       end
 
       it "should fail when asked to destroy a node that does not exist" do
-        proc { Puppet::Node.indirection.destroy(@node) }.should raise_error(ArgumentError)
+        expect { Puppet::Node.indirection.destroy(@node) }.to raise_error(ArgumentError)
       end
     end
   end

@@ -13,6 +13,8 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+require 'puppet/parameter/boolean'
+
 Puppet::Type.newtype(:augeas) do
   include Puppet::Util
 
@@ -20,7 +22,7 @@ Puppet::Type.newtype(:augeas) do
   feature :need_to_run?, "If the command should run"
   feature :execute_changes, "Actually make the changes"
 
-  @doc = <<-EOT
+  @doc = <<-'EOT'
     Apply a change or an array of changes to the filesystem
     using the augeas tool.
 
@@ -83,7 +85,7 @@ Puppet::Type.newtype(:augeas) do
       where:
 
       * `AUGEAS_PATH` is a valid path scoped by the context
-      * `MATCH_PATH` is a valid match synatx scoped by the context
+      * `MATCH_PATH` is a valid match syntax scoped by the context
       * `COMPARATOR` is one of `>, >=, !=, ==, <=,` or `<`
       * `STRING` is a string
       * `INT` is a number
@@ -96,48 +98,19 @@ Puppet::Type.newtype(:augeas) do
     desc "The changes which should be applied to the filesystem. This
     can be a command or an array of commands. The following commands are supported:
 
-    `set <PATH> <VALUE>`
-    : Sets the value `VALUE` at loction `PATH`
-
-
-    `setm <PATH> <SUB> <VALUE>`
-    : Sets multiple nodes (matching `SUB` relative to `PATH`) to `VALUE`
-
-
-    `rm <PATH>`
-    : Removes the node at location `PATH`
-
-
-    `remove <PATH>`
-    : Synonym for `rm`
-
-
-    `clear <PATH>`
-    : Sets the node at `PATH` to `NULL`, creating it if needed
-
-
-    `ins <LABEL> (before|after) <PATH>`
-    : Inserts an empty node `LABEL` either before or after `PATH`.
-
-
-    `insert <LABEL> <WHERE> <PATH>`
-    : Synonym for `ins`
-
-
-    `mv <PATH> <OTHER PATH>`
-    : Moves a node at `PATH` to the new location `OTHER PATH`
-
-
-    `move <PATH> <OTHER PATH>`
-    : Synonym for `mv`
-
-
-    `defvar <NAME> <PATH>`
-    : Sets Augeas variable `$NAME` to `PATH`
-
-
-    `defnode <NAME> <PATH> <VALUE>`
-    : Sets Augeas variable `$NAME` to `PATH`, creating it with `VALUE` if needed
+    * `set <PATH> <VALUE>` --- Sets the value `VALUE` at loction `PATH`
+    * `setm <PATH> <SUB> <VALUE>` --- Sets multiple nodes (matching `SUB` relative to `PATH`) to `VALUE`
+    * `rm <PATH>` --- Removes the node at location `PATH`
+    * `remove <PATH>` --- Synonym for `rm`
+    * `clear <PATH>` --- Sets the node at `PATH` to `NULL`, creating it if needed
+    * `clearm <PATH> <SUB>` --- Sets multiple nodes (matching `SUB` relative to `PATH`) to `NULL`
+    * `touch <PATH>` --- Creates `PATH` with the value `NULL` if it does not exist
+    * `ins <LABEL> (before|after) <PATH>` --- Inserts an empty node `LABEL` either before or after `PATH`.
+    * `insert <LABEL> <WHERE> <PATH>` --- Synonym for `ins`
+    * `mv <PATH> <OTHER PATH>` --- Moves a node at `PATH` to the new location `OTHER PATH`
+    * `move <PATH> <OTHER PATH>` --- Synonym for `mv`
+    * `defvar <NAME> <PATH>` --- Sets Augeas variable `$NAME` to `PATH`
+    * `defnode <NAME> <PATH> <VALUE>` --- Sets Augeas variable `$NAME` to `PATH`, creating it with `VALUE` if needed
 
     If the `context` parameter is set, that value is prepended to any relative `PATH`s."
   end
@@ -149,7 +122,7 @@ Puppet::Type.newtype(:augeas) do
   end
 
   newparam(:load_path) do
-    desc "Optional colon-separated list of directories; these directories are searched for schema definitions."
+    desc "Optional colon-separated list or array of directories; these directories are searched for schema definitions. The agent's `$libdir/augeas/lenses` path will always be added to support pluginsync."
     defaultto ""
   end
 
@@ -169,7 +142,8 @@ Puppet::Type.newtype(:augeas) do
 
   newparam(:lens) do
     desc "Use a specific lens, e.g. `Hosts.lns`. When this parameter is set, you
-      must also set the `incl` parameter to indicate which file to load."
+      must also set the `incl` parameter to indicate which file to load.
+      The Augeas documentation includes [a list of available lenses](http://augeas.net/stock_lenses.html)."
   end
 
   newparam(:incl) do
@@ -182,6 +156,16 @@ Puppet::Type.newtype(:augeas) do
     has_lens = !self[:lens].nil?
     has_incl = !self[:incl].nil?
     self.fail "You must specify both the lens and incl parameters, or neither." if has_lens != has_incl
+  end
+
+  newparam(:show_diff, :boolean => true, :parent => Puppet::Parameter::Boolean) do
+    desc "Whether to display differences when the file changes, defaulting to
+        true.  This parameter is useful for files that may contain passwords or
+        other secret data, which might otherwise be included in Puppet reports or
+        other insecure outputs.  If the global `show_diff` setting
+        is false, then no diffs will be shown even if this parameter is true."
+
+    defaultto :true
   end
 
   # This is the actual meat of the code. It forces

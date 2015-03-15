@@ -1,8 +1,6 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 require 'puppet/interface'
-require 'puppet/interface/option'
-require 'puppet/interface/documentation'
 
 class Puppet::Interface::TinyDocs::Test
   include Puppet::Interface::TinyDocs
@@ -26,10 +24,10 @@ describe Puppet::Interface::TinyDocs do
       subject.options = [:foo, :bar]
     end
 
-    it { should respond_to :build_synopsis }
+    it { is_expected.to respond_to :build_synopsis }
 
     it "should put a space between options (#7828)" do
-      subject.build_synopsis('baz').should =~ /#{Regexp.quote('[--foo] [--bar]')}/
+      expect(subject.build_synopsis('baz')).to match(/#{Regexp.quote('[--foo] [--bar]')}/)
     end
   end
 end

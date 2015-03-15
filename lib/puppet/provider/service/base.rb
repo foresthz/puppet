@@ -1,5 +1,5 @@
-Puppet::Type.type(:service).provide :base do
-  desc "The simplest form of service support.
+Puppet::Type.type(:service).provide :base, :parent => :service do
+  desc "The simplest form of Unix service support.
 
   You have to specify enough about your service for this to work; the
   minimum you can specify is a binary for starting the process, and this
@@ -11,19 +11,28 @@ Puppet::Type.type(:service).provide :base do
 
   commands :kill => "kill"
 
-  def self.instances
-    []
+  # get the proper 'ps' invocation for the platform
+  # ported from the facter 2.x implementation, since facter 3.x
+  # is dropping the fact (for which this was the only use)
+  def getps
+    case Facter.value(:operatingsystem)
+    when 'OpenWrt'
+      'ps www'
+    when 'FreeBSD', 'NetBSD', 'OpenBSD', 'Darwin', 'DragonFly'
+      'ps auxwww'
+    else
+      'ps -ef'
+     end
   end
+  private :getps
 
   # Get the process ID for a running process. Requires the 'pattern'
   # parameter.
   def getpid
     @resource.fail "Either stop/status commands or a pattern must be specified" unless @resource[:pattern]
-    ps = Facter["ps"].value
-    @resource.fail "You must upgrade Facter to a version that includes 'ps'" unless ps and ps != ""
     regex = Regexp.new(@resource[:pattern])
     self.debug "Executing '#{ps}'"
-    IO.popen(ps) { |table|
+    IO.popen(getps) { |table|
       table.each_line { |line|
         if regex.match(line)
           self.debug "Process matched: #{line}"
@@ -35,20 +44,7 @@ Puppet::Type.type(:service).provide :base do
 
     nil
   end
-
-  # How to restart the process.
-  def restart
-    if @resource[:restart] or restartcmd
-      ucommand(:restart)
-    else
-      self.stop
-      self.start
-    end
-  end
-
-  # There is no default command, which causes other methods to be used
-  def restartcmd
-  end
+  private :getpid
 
   # Check if the process is running.  Prefer the 'status' parameter,
   # then 'statuscmd' method, then look in the process table.  We give
@@ -110,8 +106,8 @@ Puppet::Type.type(:service).provide :base do
       end
       begin
         output = kill pid
-      rescue Puppet::ExecutionFailure => detail
-        @resource.fail "Could not kill #{self.name}, PID #{pid}: #{output}"
+      rescue Puppet::ExecutionFailure
+        @resource.fail Puppet::Error, "Could not kill #{self.name}, PID #{pid}: #{output}", $!
       end
       return true
     end
@@ -119,27 +115,6 @@ Puppet::Type.type(:service).provide :base do
 
   # There is no default command, which causes other methods to be used
   def stopcmd
-  end
-
-  # A simple wrapper so execution failures are a bit more informative.
-  def texecute(type, command, fof = true)
-    begin
-      # #565: Services generally produce no output, so squelch them.
-      execute(command, :failonfail => fof, :squelch => true)
-    rescue Puppet::ExecutionFailure => detail
-      @resource.fail "Could not #{type} #{@resource.ref}: #{detail}"
-    end
-    nil
-  end
-
-  # Use either a specified command or the default for our provider.
-  def ucommand(type, fof = true)
-    if c = @resource[type]
-      cmd = [c]
-    else
-      cmd = [send("#{type}cmd")].flatten
-    end
-    texecute(type, cmd, fof)
   end
 end
 

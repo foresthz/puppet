@@ -1,4 +1,4 @@
-#! /bin/bash
+#! /bin/sh
 #
 # Jeff McCune <jeff@puppetlabs.com>
 # 2010-10-20
@@ -34,7 +34,7 @@
 set -e
 set -u
 
-if [[ "${1:-}" == "--help" ]]; then
+if [ "${1:-}" = "--help" ]; then
   cat <<EO_HELP
 This command reconfigures the environment once for development.
 It is designed to wrap around any other command, specifically puppet
@@ -67,6 +67,7 @@ EO_HELP
 fi
 
 if test -d puppet -o -d facter; then
+  (
     echo " WARNING!"
     echo "  Strange things happen if puppet or facter are in the"
     echo "  current working directory"
@@ -77,6 +78,7 @@ if test -d puppet -o -d facter; then
     echo ""
     echo "Sleeping 2 seconds."
     echo ""
+  ) 1>&2
     sleep 2
 fi
 
@@ -93,7 +95,11 @@ myrubylib="${ENVPUPPET_BASEDIR}/puppet/lib"
 mypath="${mypath}:${ENVPUPPET_BASEDIR}/facter/bin"
 myrubylib="${myrubylib}:${ENVPUPPET_BASEDIR}/facter/lib"
 
-if [[ "${ENVPUPPET_BLEEDING:-}" == "true" ]]; then
+# git://github.com/puppetlabs/hiera.git
+mypath="${mypath}:${ENVPUPPET_BASEDIR}/hiera/bin"
+myrubylib="${myrubylib}:${ENVPUPPET_BASEDIR}/hiera/lib"
+
+if [ "${ENVPUPPET_BLEEDING:-}" = "true" ]; then
   # git://github.com/puppetlabs/facter.git
   mypath="${mypath}:${ENVPUPPET_BASEDIR}/puppet-interfaces/bin"
   myrubylib="${myrubylib}:${ENVPUPPET_BASEDIR}/puppet-interfaces/lib"
@@ -120,7 +126,7 @@ export ENVPUPPET_OLD_RUBYLIB="${RUBYLIB:-}"
 export PATH="${mypath%%:}"
 export RUBYLIB="${myrubylib%%:}"
 
-if [[ $# -eq 0 ]]; then
+if [ $# -eq 0 ]; then
   echo "export ENVPUPPET_OLD_PATH='${ENVPUPPET_OLD_PATH}'"
   echo "export ENVPUPPET_OLD_RUBYLIB='${ENVPUPPET_OLD_RUBYLIB}'"
   echo "export ENVPUPPET_BASEDIR='${ENVPUPPET_BASEDIR}'"

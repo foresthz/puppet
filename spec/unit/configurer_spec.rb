@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 require 'puppet/configurer'
 
@@ -12,12 +12,8 @@ describe Puppet::Configurer do
     Puppet[:report] = true
   end
 
-  it "should include the Plugin Handler module" do
-    Puppet::Configurer.ancestors.should be_include(Puppet::Configurer::PluginHandler)
-  end
-
   it "should include the Fact Handler module" do
-    Puppet::Configurer.ancestors.should be_include(Puppet::Configurer::FactHandler)
+    expect(Puppet::Configurer.ancestors).to be_include(Puppet::Configurer::FactHandler)
   end
 
   describe "when executing a pre-run hook" do
@@ -39,7 +35,7 @@ describe Puppet::Configurer do
       Puppet.settings[:prerun_command] = "/my/command"
       Puppet::Util::Execution.expects(:execute).with(["/my/command"]).raises(Puppet::ExecutionFailure, "Failed")
 
-      @agent.execute_prerun_command.should be_false
+      expect(@agent.execute_prerun_command).to be_falsey
     end
   end
 
@@ -62,7 +58,7 @@ describe Puppet::Configurer do
       Puppet.settings[:postrun_command] = "/my/command"
       Puppet::Util::Execution.expects(:execute).with(["/my/command"]).raises(Puppet::ExecutionFailure, "Failed")
 
-      @agent.execute_postrun_command.should be_false
+      expect(@agent.execute_postrun_command).to be_falsey
     end
   end
 
@@ -74,7 +70,7 @@ describe Puppet::Configurer do
       @facts = Puppet::Node::Facts.new(Puppet[:node_name_value])
       Puppet::Node::Facts.indirection.save(@facts)
 
-      @catalog = Puppet::Resource::Catalog.new
+      @catalog = Puppet::Resource::Catalog.new("tester", Puppet::Node::Environment.remote(Puppet[:environment].to_sym))
       @catalog.stubs(:to_ral).returns(@catalog)
       Puppet::Resource::Catalog.indirection.terminus_class = :rest
       Puppet::Resource::Catalog.indirection.stubs(:find).returns(@catalog)
@@ -94,9 +90,30 @@ describe Puppet::Configurer do
       @agent.run
     end
 
-    it "should download plugins" do
+    it "downloads plugins when told" do
       @agent.expects(:download_plugins)
-      @agent.run
+      @agent.run(:pluginsync => true)
+    end
+
+    it "does not download plugins when told" do
+      @agent.expects(:download_plugins).never
+      @agent.run(:pluginsync => false)
+    end
+
+    it "should carry on when it can't fetch its node definition" do
+      error = Net::HTTPError.new(400, 'dummy server communication error')
+      Puppet::Node.indirection.expects(:find).raises(error)
+      expect(@agent.run).to eq(0)
+    end
+
+    it "applies a cached catalog when it can't connect to the master" do
+      error = Errno::ECONNREFUSED.new('Connection refused - connect(2)')
+
+      Puppet::Node.indirection.expects(:find).raises(error)
+      Puppet::Resource::Catalog.indirection.expects(:find).with(anything, has_entry(:ignore_cache => true)).raises(error)
+      Puppet::Resource::Catalog.indirection.expects(:find).with(anything, has_entry(:ignore_terminus => true)).returns(@catalog)
+
+      expect(@agent.run).to eq(0)
     end
 
     it "should initialize a transaction report if one is not provided" do
@@ -113,7 +130,7 @@ describe Puppet::Configurer do
       report = Puppet::Transaction::Report.new("apply")
 
       @agent.run(:report => report)
-      report.host.should == 'node_name_from_fact'
+      expect(report.host).to eq('node_name_from_fact')
     end
 
     it "should pass the new report to the catalog" do
@@ -126,20 +143,17 @@ describe Puppet::Configurer do
 
     it "should use the provided report if it was passed one" do
       report = Puppet::Transaction::Report.new("apply")
-      Puppet::Transaction::Report.expects(:new).never
-      @catalog.expects(:apply).with{|options| options[:report] == report}
+      @catalog.expects(:apply).with {|options| options[:report] == report}
 
       @agent.run(:report => report)
     end
 
     it "should set the report as a log destination" do
       report = Puppet::Transaction::Report.new("apply")
-      Puppet::Transaction::Report.expects(:new).returns report
 
-      Puppet::Util::Log.expects(:newdestination).with(report)
-      Puppet::Util::Log.expects(:close).with(report)
+      report.expects(:<<).with(instance_of(Puppet::Util::Log)).at_least_once
 
-      @agent.run
+      @agent.run(:report => report)
     end
 
     it "should retrieve the catalog" do
@@ -171,7 +185,7 @@ describe Puppet::Configurer do
     end
 
     it "should benchmark how long it takes to apply the catalog" do
-      @agent.expects(:benchmark).with(:notice, "Finished catalog run")
+      @agent.expects(:benchmark).with(:notice, instance_of(String))
 
       @agent.expects(:retrieve_catalog).returns @catalog
 
@@ -186,9 +200,12 @@ describe Puppet::Configurer do
     end
 
     it "should send the report" do
-      report = Puppet::Transaction::Report.new("apply")
+      report = Puppet::Transaction::Report.new("apply", nil, "test", "aaaa")
       Puppet::Transaction::Report.expects(:new).returns(report)
       @agent.expects(:send_report).with(report)
+
+      expect(report.environment).to eq("test")
+      expect(report.transaction_uuid).to eq("aaaa")
 
       @agent.run
     end
@@ -196,9 +213,12 @@ describe Puppet::Configurer do
     it "should send the transaction report even if the catalog could not be retrieved" do
       @agent.expects(:retrieve_catalog).returns nil
 
-      report = Puppet::Transaction::Report.new("apply")
+      report = Puppet::Transaction::Report.new("apply", nil, "test", "aaaa")
       Puppet::Transaction::Report.expects(:new).returns(report)
-      @agent.expects(:send_report)
+      @agent.expects(:send_report).with(report)
+
+      expect(report.environment).to eq("test")
+      expect(report.transaction_uuid).to eq("aaaa")
 
       @agent.run
     end
@@ -206,11 +226,14 @@ describe Puppet::Configurer do
     it "should send the transaction report even if there is a failure" do
       @agent.expects(:retrieve_catalog).raises "whatever"
 
-      report = Puppet::Transaction::Report.new("apply")
+      report = Puppet::Transaction::Report.new("apply", nil, "test", "aaaa")
       Puppet::Transaction::Report.expects(:new).returns(report)
-      @agent.expects(:send_report)
+      @agent.expects(:send_report).with(report)
 
-      @agent.run.should be_nil
+      expect(report.environment).to eq("test")
+      expect(report.transaction_uuid).to eq("aaaa")
+
+      expect(@agent.run).to be_nil
     end
 
     it "should remove the report as a log destination when the run is finished" do
@@ -219,7 +242,7 @@ describe Puppet::Configurer do
 
       @agent.run
 
-      Puppet::Util::Log.destinations.should_not include(report)
+      expect(Puppet::Util::Log.destinations).not_to include(report)
     end
 
     it "should return the report exit_status as the result of the run" do
@@ -227,7 +250,7 @@ describe Puppet::Configurer do
       Puppet::Transaction::Report.expects(:new).returns(report)
       report.expects(:exit_status).returns(1234)
 
-      @agent.run.should == 1234
+      expect(@agent.run).to eq(1234)
     end
 
     it "should send the transaction report even if the pre-run command fails" do
@@ -236,9 +259,9 @@ describe Puppet::Configurer do
 
       Puppet.settings[:prerun_command] = "/my/command"
       Puppet::Util::Execution.expects(:execute).with(["/my/command"]).raises(Puppet::ExecutionFailure, "Failed")
-      @agent.expects(:send_report)
+      @agent.expects(:send_report).with(report)
 
-      @agent.run.should be_nil
+      expect(@agent.run).to be_nil
     end
 
     it "should include the pre-run command failure in the report" do
@@ -248,8 +271,8 @@ describe Puppet::Configurer do
       Puppet.settings[:prerun_command] = "/my/command"
       Puppet::Util::Execution.expects(:execute).with(["/my/command"]).raises(Puppet::ExecutionFailure, "Failed")
 
-      @agent.run.should be_nil
-      report.logs.find { |x| x.message =~ /Could not run command from prerun_command/ }.should be
+      expect(@agent.run).to be_nil
+      expect(report.logs.find { |x| x.message =~ /Could not run command from prerun_command/ }).to be
     end
 
     it "should send the transaction report even if the post-run command fails" do
@@ -258,9 +281,9 @@ describe Puppet::Configurer do
 
       Puppet.settings[:postrun_command] = "/my/command"
       Puppet::Util::Execution.expects(:execute).with(["/my/command"]).raises(Puppet::ExecutionFailure, "Failed")
-      @agent.expects(:send_report)
+      @agent.expects(:send_report).with(report)
 
-      @agent.run.should be_nil
+      expect(@agent.run).to be_nil
     end
 
     it "should include the post-run command failure in the report" do
@@ -272,7 +295,7 @@ describe Puppet::Configurer do
 
       report.expects(:<<).with { |log| log.message.include?("Could not run command from postrun_command") }
 
-      @agent.run.should be_nil
+      expect(@agent.run).to be_nil
     end
 
     it "should execute post-run command even if the pre-run command fails" do
@@ -281,7 +304,7 @@ describe Puppet::Configurer do
       Puppet::Util::Execution.expects(:execute).with(["/my/precommand"]).raises(Puppet::ExecutionFailure, "Failed")
       Puppet::Util::Execution.expects(:execute).with(["/my/postcommand"])
 
-      @agent.run.should be_nil
+      expect(@agent.run).to be_nil
     end
 
     it "should finalize the report" do
@@ -302,7 +325,7 @@ describe Puppet::Configurer do
       @catalog.expects(:apply).never()
       @agent.expects(:send_report)
 
-      @agent.run.should be_nil
+      expect(@agent.run).to be_nil
     end
 
     it "should apply the catalog, send the report, and return nil if the post-run command fails" do
@@ -315,12 +338,12 @@ describe Puppet::Configurer do
       @catalog.expects(:apply)
       @agent.expects(:send_report)
 
-      @agent.run.should be_nil
+      expect(@agent.run).to be_nil
     end
 
     it "should refetch the catalog if the server specifies a new environment in the catalog" do
-      @catalog.stubs(:environment).returns("second_env")
-      @agent.expects(:retrieve_catalog).returns(@catalog).twice
+      catalog = Puppet::Resource::Catalog.new("tester", Puppet::Node::Environment.remote('second_env'))
+      @agent.expects(:retrieve_catalog).returns(catalog).twice
 
       @agent.run
     end
@@ -330,7 +353,28 @@ describe Puppet::Configurer do
 
       @agent.run
 
-      @agent.environment.should == "second_env"
+      expect(@agent.environment).to eq("second_env")
+    end
+
+    it "should fix the report if the server specifies a new environment in the catalog" do
+      report = Puppet::Transaction::Report.new("apply", nil, "test", "aaaa")
+      Puppet::Transaction::Report.expects(:new).returns(report)
+      @agent.expects(:send_report).with(report)
+
+      @catalog.stubs(:environment).returns("second_env")
+      @agent.stubs(:retrieve_catalog).returns(@catalog)
+
+      @agent.run
+
+      expect(report.environment).to eq("second_env")
+    end
+
+    it "should clear the global caches" do
+      $env_module_directories = false
+
+      @agent.run
+
+      expect($env_module_directories).to eq(nil)
     end
 
     describe "when not using a REST terminus for catalogs" do
@@ -367,6 +411,7 @@ describe Puppet::Configurer do
       Puppet[:lastrunfile] = tmpfile('last_run_file')
 
       @report = Puppet::Transaction::Report.new("apply")
+      Puppet[:reports] = "none"
     end
 
     it "should print a report summary if configured to do so" do
@@ -419,7 +464,7 @@ describe Puppet::Configurer do
       Puppet::Transaction::Report.indirection.expects(:save).raises("whatever")
 
       Puppet.expects(:err)
-      lambda { @configurer.send_report(@report) }.should_not raise_error
+      expect { @configurer.send_report(@report) }.not_to raise_error
     end
   end
 
@@ -437,13 +482,13 @@ describe Puppet::Configurer do
 
     it "should write the last run file" do
       @configurer.save_last_run_summary(@report)
-      FileTest.exists?(Puppet[:lastrunfile]).should be_true
+      expect(Puppet::FileSystem.exist?(Puppet[:lastrunfile])).to be_truthy
     end
 
     it "should write the raw summary as yaml" do
       @report.expects(:raw_summary).returns("summary")
       @configurer.save_last_run_summary(@report)
-      File.read(Puppet[:lastrunfile]).should == YAML.dump("summary")
+      expect(File.read(Puppet[:lastrunfile])).to eq(YAML.dump("summary"))
     end
 
     it "should log but not fail if saving the last run summary fails" do
@@ -458,7 +503,33 @@ describe Puppet::Configurer do
       Puppet::Util.expects(:replace_file).yields(fh)
 
       Puppet.expects(:err)
-      expect { @configurer.save_last_run_summary(@report) }.should_not raise_error
+      expect { @configurer.save_last_run_summary(@report) }.to_not raise_error
+    end
+
+    it "should create the last run file with the correct mode" do
+      Puppet.settings.setting(:lastrunfile).expects(:mode).returns('664')
+      @configurer.save_last_run_summary(@report)
+
+      if Puppet::Util::Platform.windows?
+        require 'puppet/util/windows/security'
+        mode = Puppet::Util::Windows::Security.get_mode(Puppet[:lastrunfile])
+      else
+        mode = Puppet::FileSystem.stat(Puppet[:lastrunfile]).mode
+      end
+      expect(mode & 0777).to eq(0664)
+    end
+
+    it "should report invalid last run file permissions" do
+      Puppet.settings.setting(:lastrunfile).expects(:mode).returns('892')
+      Puppet.expects(:err).with(regexp_matches(/Could not save last run local report.*892 is invalid/))
+      @configurer.save_last_run_summary(@report)
+    end
+  end
+
+  describe "when requesting a node" do
+    it "uses the transaction uuid in the request" do
+      Puppet::Node.indirection.expects(:find).with(anything, has_entries(:transaction_uuid => anything)).twice
+      @agent.run
     end
   end
 
@@ -484,14 +555,14 @@ describe Puppet::Configurer do
         Puppet::Resource::Catalog.indirection.expects(:find).with { |name, options| options[:ignore_terminus] == true }.returns @catalog
         Puppet::Resource::Catalog.indirection.expects(:find).with { |name, options| options[:ignore_cache] == true }.never
 
-        @agent.retrieve_catalog({}).should == @catalog
+        expect(@agent.retrieve_catalog({})).to eq(@catalog)
       end
 
       it "should compile a new catalog if none is found in the cache" do
         Puppet::Resource::Catalog.indirection.expects(:find).with { |name, options| options[:ignore_terminus] == true }.returns nil
         Puppet::Resource::Catalog.indirection.expects(:find).with { |name, options| options[:ignore_cache] == true }.returns @catalog
 
-        @agent.retrieve_catalog({}).should == @catalog
+        expect(@agent.retrieve_catalog({})).to eq(@catalog)
       end
     end
 
@@ -512,7 +583,7 @@ describe Puppet::Configurer do
     it "should default to returning a catalog retrieved directly from the server, skipping the cache" do
       Puppet::Resource::Catalog.indirection.expects(:find).with { |name, options| options[:ignore_cache] == true }.returns @catalog
 
-      @agent.retrieve_catalog({}).should == @catalog
+      expect(@agent.retrieve_catalog({})).to eq(@catalog)
     end
 
     it "should log and return the cached catalog when no catalog can be retrieved from the server" do
@@ -521,51 +592,50 @@ describe Puppet::Configurer do
 
       Puppet.expects(:notice)
 
-      @agent.retrieve_catalog({}).should == @catalog
+      expect(@agent.retrieve_catalog({})).to eq(@catalog)
     end
 
     it "should not look in the cache for a catalog if one is returned from the server" do
       Puppet::Resource::Catalog.indirection.expects(:find).with { |name, options| options[:ignore_cache] == true }.returns @catalog
       Puppet::Resource::Catalog.indirection.expects(:find).with { |name, options| options[:ignore_terminus] == true }.never
 
-      @agent.retrieve_catalog({}).should == @catalog
+      expect(@agent.retrieve_catalog({})).to eq(@catalog)
     end
 
     it "should return the cached catalog when retrieving the remote catalog throws an exception" do
       Puppet::Resource::Catalog.indirection.expects(:find).with { |name, options| options[:ignore_cache] == true }.raises "eh"
       Puppet::Resource::Catalog.indirection.expects(:find).with { |name, options| options[:ignore_terminus] == true }.returns @catalog
 
-      @agent.retrieve_catalog({}).should == @catalog
+      expect(@agent.retrieve_catalog({})).to eq(@catalog)
     end
 
     it "should log and return nil if no catalog can be retrieved from the server and :usecacheonfailure is disabled" do
-      Puppet.stubs(:[])
-      Puppet.expects(:[]).with(:usecacheonfailure).returns false
+      Puppet[:usecacheonfailure] = false
       Puppet::Resource::Catalog.indirection.expects(:find).with { |name, options| options[:ignore_cache] == true }.returns nil
 
       Puppet.expects(:warning)
 
-      @agent.retrieve_catalog({}).should be_nil
+      expect(@agent.retrieve_catalog({})).to be_nil
     end
 
     it "should return nil if no cached catalog is available and no catalog can be retrieved from the server" do
       Puppet::Resource::Catalog.indirection.expects(:find).with { |name, options| options[:ignore_cache] == true }.returns nil
       Puppet::Resource::Catalog.indirection.expects(:find).with { |name, options| options[:ignore_terminus] == true }.returns nil
 
-      @agent.retrieve_catalog({}).should be_nil
+      expect(@agent.retrieve_catalog({})).to be_nil
     end
 
     it "should convert the catalog before returning" do
       Puppet::Resource::Catalog.indirection.stubs(:find).returns @catalog
 
       @agent.expects(:convert_catalog).with { |cat, dur| cat == @catalog }.returns "converted catalog"
-      @agent.retrieve_catalog({}).should == "converted catalog"
+      expect(@agent.retrieve_catalog({})).to eq("converted catalog")
     end
 
     it "should return nil if there is an error while retrieving the catalog" do
       Puppet::Resource::Catalog.indirection.expects(:find).at_least_once.raises "eh"
 
-      @agent.retrieve_catalog({}).should be_nil
+      expect(@agent.retrieve_catalog({})).to be_nil
     end
   end
 
@@ -580,7 +650,7 @@ describe Puppet::Configurer do
     it "should convert the catalog to a RAL-formed catalog" do
       @oldcatalog.expects(:to_ral).returns @catalog
 
-      @agent.convert_catalog(@oldcatalog, 10).should equal(@catalog)
+      expect(@agent.convert_catalog(@oldcatalog, 10)).to equal(@catalog)
     end
 
     it "should finalize the catalog" do

@@ -42,11 +42,12 @@ module Puppet::Util::SELinux
     # If the file exists we should pass the mode to matchpathcon for the most specific
     # matching.  If not, we can pass a mode of 0.
     begin
-      filestat = File.lstat(file)
+      filestat = file_lstat(file)
       mode = filestat.mode
-    rescue Errno::ENOENT
+    rescue Errno::EACCES, Errno::ENOENT
       mode = 0
     end
+
     retval = Selinux.matchpathcon(file, mode)
     if retval == -1
       return nil
@@ -61,7 +62,7 @@ module Puppet::Util::SELinux
     if context.nil? or context == "unlabeled"
       return nil
     end
-    unless context =~ /^([a-z0-9_]+):([a-z0-9_]+):([a-zA-Z0-9_]+)(?::([a-zA-Z0-9:,._-]+))?/
+    unless context =~ /^([^\s:]+):([^\s:]+):([^\s:]+)(?::([\sa-zA-Z0-9:,._-]+))?$/
       raise Puppet::Error, "Invalid context to parse: #{context}"
     end
     ret = {
@@ -104,7 +105,7 @@ module Puppet::Util::SELinux
         when :selrange
           context[3] = value
         else
-          raise ArguementError, "set_selinux_context component must be one of :seluser, :selrole, :seltype, or :selrange"
+          raise ArgumentError, "set_selinux_context component must be one of :seluser, :selrole, :seltype, or :selrange"
       end
       context = context.join(':')
     else
@@ -134,6 +135,21 @@ module Puppet::Util::SELinux
       return new_context
     end
     nil
+  end
+
+  ########################################################################
+  # Internal helper methods from here on in, kids.  Don't fiddle.
+  private
+
+  # Check filesystem a path resides on for SELinux support against
+  # whitelist of known-good filesystems.
+  # Returns true if the filesystem can support SELinux labels and
+  # false if not.
+  def selinux_label_support?(file)
+    fstype = find_fs(file)
+    return false if fstype.nil?
+    filesystems = ['ext2', 'ext3', 'ext4', 'gfs', 'gfs2', 'xfs', 'jfs', 'btrfs']
+    filesystems.include?(fstype)
   end
 
   # Internal helper function to read and parse /proc/mounts
@@ -171,46 +187,36 @@ module Puppet::Util::SELinux
     mntpoint
   end
 
-  def realpath(path)
-    path, rest = Pathname.new(path), []
-    path, rest = path.dirname, [path.basename] + rest while ! path.exist?
-    File.join( path.realpath, *rest )
-  end
-
-  def parent_directory(path)
-    Pathname.new(path).dirname.to_s
-  end
-
-  # Internal helper function to return which type of filesystem a
-  # given file path resides on
+  # Internal helper function to return which type of filesystem a given file
+  # path resides on
   def find_fs(path)
-    unless mnts = read_mounts
-      return nil
+    return nil unless mounts = read_mounts
+
+    # cleanpath eliminates useless parts of the path (like '.', or '..', or
+    # multiple slashes), without touching the filesystem, and without
+    # following symbolic links.  This gives the right (logical) tree to follow
+    # while we try and figure out what file-system the target lives on.
+    path = Pathname(path).cleanpath
+    unless path.absolute?
+      raise Puppet::DevError, "got a relative path in SELinux find_fs: #{path}"
     end
 
-    # For a given file:
-    # Check if the filename is in the data structure;
-    #   return the fstype if it is.
-    # Just in case: return something if you're down to "/" or ""
-    # Remove the last slash and everything after it,
-    #   and repeat with that as the file for the next loop through.
-    path = realpath(path)
-    while not path.empty?
-      return mnts[path] if mnts.has_key?(path)
-      path = parent_directory(path)
+    # Now, walk up the tree until we find a match for that path in the hash.
+    path.ascend do |segment|
+      return mounts[segment.to_s] if mounts.has_key?(segment.to_s)
     end
-    mnts['/']
+
+    # Should never be reached...
+    return mounts['/']
   end
 
-  # Check filesystem a path resides on for SELinux support against
-  # whitelist of known-good filesystems.
-  # Returns true if the filesystem can support SELinux labels and
-  # false if not.
-  def selinux_label_support?(file)
-    fstype = find_fs(file)
-    return false if fstype.nil?
-    filesystems = ['ext2', 'ext3', 'ext4', 'gfs', 'gfs2', 'xfs', 'jfs']
-    filesystems.include?(fstype)
+  ##
+  # file_lstat is an internal, private method to allow precise stubbing and
+  # mocking without affecting the rest of the system.
+  #
+  # @return [File::Stat] File.lstat result
+  def file_lstat(path)
+    Puppet::FileSystem.lstat(path)
   end
-
+  private :file_lstat
 end

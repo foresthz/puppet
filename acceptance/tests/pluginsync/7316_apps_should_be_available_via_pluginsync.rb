@@ -18,7 +18,8 @@ all_tests_passed = false
 ###############################################################################
 
 # create some vars to point to the directories that we're going to point the master/agents at
-master_module_dir = "master_modules"
+environments_dir = "environments"
+master_module_dir = "#{environments_dir}/production/modules"
 agent_lib_dir = "agent_lib"
 
 app_name = "superbogus"
@@ -47,15 +48,16 @@ end
 HERE
 
 
-# this begin block is here for handling temp file cleanup via an "ensure" block at the very end of the
-# test.
+# this begin block is here for handling temp file cleanup via an "ensure" block
+# at the very end of the test.
 begin
 
   modes = ["application"]
 
   modes.each do |mode|
 
-    # here we create a custom app, which basically doesn't do anything except for print a hello-world message
+    # here we create a custom app, which basically doesn't do anything except
+    # for print a hello-world message
     agent_module_app_file = "#{agent_lib_dir}/puppet/#{mode}/#{app_name}.rb"
     master_module_app_file = "#{master_module_dir}/#{app_name}/lib/puppet/#{mode}/#{app_name}.rb"
 
@@ -71,10 +73,13 @@ begin
       end
     end
 
+    master_opts = {
+      'main' => {
+        'environmentpath' => "#{get_test_file_path(master, environments_dir)}",
+      }
+    }
     step "start the master" do
-      with_master_running_on(master,
-             "--modulepath=\"#{get_test_file_path(master, master_module_dir)}\" " +
-             "--autosign true") do
+      with_puppet_running_on master, master_opts do
 
         # the module files shouldn't exist on the agent yet because they haven't been synced
         step "verify that the module files don't exist on the agent path" do
@@ -87,8 +92,10 @@ begin
 
         step "run the agent" do
           agents.each do |agent|
-            run_agent_on(agent, "--trace --libdir=\"#{get_test_file_path(agent, agent_lib_dir)}\" " +
-                                "--no-daemonize --verbose --onetime --test --server #{master}")
+            on(agent, puppet('agent',
+                             "--libdir=\"#{get_test_file_path(agent, agent_lib_dir)}\" ",
+                             "--test --trace --server #{master}")
+            )
           end
         end
 
@@ -98,7 +105,7 @@ begin
     step "verify that the module files were synced down to the agent" do
       agents.each do |agent|
         unless test_file_exists?(agent, agent_module_app_file) then
-          fail_test("Expected app file not synced to agent: '#{get_test_file_path(agent, agent_module_app_file)}'")
+          fail_test("The app file we expect was not not synced to agent: '#{get_test_file_path(agent, agent_module_app_file)}'")
         end
       end
     end

@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'ostruct'
@@ -7,7 +7,7 @@ require 'puppet/util/network_device'
 describe Puppet::Util::NetworkDevice do
 
   before(:each) do
-    @device = OpenStruct.new(:name => "name", :provider => "test")
+    @device = OpenStruct.new(:name => "name", :provider => "test", :url => "telnet://admin:password@127.0.0.1", :options => { :debug => false })
   end
 
   after(:each) do
@@ -16,7 +16,7 @@ describe Puppet::Util::NetworkDevice do
 
   class Puppet::Util::NetworkDevice::Test
     class Device
-      def initialize(device)
+      def initialize(device, options)
       end
     end
   end
@@ -29,13 +29,13 @@ describe Puppet::Util::NetworkDevice do
 
     it "should create a network device instance" do
       Puppet::Util::NetworkDevice.stubs(:require)
-      Puppet::Util::NetworkDevice::Test::Device.expects(:new)
+      Puppet::Util::NetworkDevice::Test::Device.expects(:new).with("telnet://admin:password@127.0.0.1", :debug => false)
       Puppet::Util::NetworkDevice.init(@device)
     end
 
     it "should raise an error if the remote device instance can't be created" do
       Puppet::Util::NetworkDevice.stubs(:require).raises("error")
-      lambda { Puppet::Util::NetworkDevice.init(@device) }.should raise_error
+      expect { Puppet::Util::NetworkDevice.init(@device) }.to raise_error
     end
 
     it "should let caller to access the singleton device" do
@@ -44,7 +44,7 @@ describe Puppet::Util::NetworkDevice do
       Puppet::Util::NetworkDevice::Test::Device.expects(:new).returns(device)
       Puppet::Util::NetworkDevice.init(@device)
 
-      Puppet::Util::NetworkDevice.current.should == device
+      expect(Puppet::Util::NetworkDevice.current).to eq(device)
     end
   end
 end

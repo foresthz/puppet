@@ -1,3 +1,4 @@
+require 'facter'
 require 'puppet/util/warnings'
 require 'forwardable'
 require 'etc'
@@ -17,15 +18,7 @@ module Puppet::Util::SUIDManager
 
   def osx_maj_ver
     return @osx_maj_ver unless @osx_maj_ver.nil?
-    require 'facter'
-    # 'kernel' is available without explicitly loading all facts
-    if Facter.value('kernel') != 'Darwin'
-      @osx_maj_ver = false
-      return @osx_maj_ver
-    end
-    # But 'macosx_productversion_major' requires it.
-    Facter.loadfacts
-    @osx_maj_ver = Facter.value('macosx_productversion_major')
+    @osx_maj_ver = Facter.value('macosx_productversion_major') || false
   end
   module_function :osx_maj_ver
 
@@ -108,6 +101,8 @@ module Puppet::Util::SUIDManager
     gid = convert_xid(:gid, group)
     raise Puppet::Error, "No such group #{group}" unless gid
 
+    return if Process.egid == gid
+
     if permanently
       Process::GID.change_privilege(gid)
     else
@@ -121,6 +116,8 @@ module Puppet::Util::SUIDManager
   def change_user(user, permanently=false)
     uid = convert_xid(:uid, user)
     raise Puppet::Error, "No such user #{user}" unless uid
+
+    return if Process.euid == uid
 
     if permanently
       # If changing uid, we must be root. So initgroups first here.
@@ -164,35 +161,4 @@ module Puppet::Util::SUIDManager
   end
 
   module_function :initgroups
-
-  # Run a command and capture the output
-  # Parameters:
-  # [command] the command to execute
-  # [new_uid] (optional) a userid to run the command as
-  # [new_gid] (optional) a groupid to run the command as
-  # [options] (optional, defaults to {}) a hash of option key/value pairs; currently supported:
-  #   :override_locale (defaults to true) a flag indicating whether or puppet should temporarily override the
-  #     system locale for the duration of the command.  If true, the locale will be set to 'C' to ensure consistent
-  #     output / formatting from the command, which makes it much easier to parse the output.  If false, the system
-  #     locale will be respected.
-  #   :custom_environment (default {}) -- a hash of key/value pairs to set as environment variables for the duration
-  #     of the command
-  def run_and_capture(command, new_uid=nil, new_gid=nil, options = {})
-
-    # specifying these here rather than in the method signature to allow callers to pass in a partial
-    # set of overrides without affecting the default values for options that they don't pass in
-    default_options = {
-        :override_locale => true,
-        :custom_environment => {},
-    }
-
-    options = default_options.merge(options)
-
-    output = Puppet::Util::Execution.execute(command, :failonfail => false, :combine => true,
-                                  :uid => new_uid, :gid => new_gid,
-                                  :override_locale => options[:override_locale],
-                                  :custom_environment => options[:custom_environment])
-    [output, $CHILD_STATUS.dup]
-  end
-  module_function :run_and_capture
 end

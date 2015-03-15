@@ -4,9 +4,9 @@ require 'puppet/module_tool/install_directory'
 describe Puppet::ModuleTool::InstallDirectory do
   def expect_normal_results
     results = installer.run
-    results[:installed_modules].length.should eq 1
-    results[:installed_modules][0][:module].should == "pmtacceptance-stdlib"
-    results[:installed_modules][0][:version][:vstring].should == "1.0.0"
+    expect(results[:installed_modules].length).to eq 1
+    expect(results[:installed_modules][0][:module]).to eq("pmtacceptance-stdlib")
+    expect(results[:installed_modules][0][:version][:vstring]).to eq("1.0.0")
     results
   end
 
@@ -25,7 +25,11 @@ describe Puppet::ModuleTool::InstallDirectory do
 
     install = Puppet::ModuleTool::InstallDirectory.new(target_dir)
 
-    expect { install.prepare('module', '1.0.1') }.should raise_error(Puppet::ModuleTool::Errors::PermissionDeniedCreateInstallDirectoryError)
+    expect {
+      install.prepare('module', '1.0.1')
+    }.to raise_error(
+      Puppet::ModuleTool::Errors::PermissionDeniedCreateInstallDirectoryError
+    )
   end
 
   it "(#15202) errors when an entry along the path is not a directory" do
@@ -34,7 +38,9 @@ describe Puppet::ModuleTool::InstallDirectory do
 
     install = Puppet::ModuleTool::InstallDirectory.new(target_dir)
 
-    expect { install.prepare('module', '1.0.1') }.should raise_error(Puppet::ModuleTool::Errors::InstallPathExistsNotDirectoryError)
+    expect {
+      install.prepare('module', '1.0.1')
+    }.to raise_error(Puppet::ModuleTool::Errors::InstallPathExistsNotDirectoryError)
   end
 
   it "(#15202) simply re-raises an unknown error" do
@@ -43,7 +49,7 @@ describe Puppet::ModuleTool::InstallDirectory do
 
     install = Puppet::ModuleTool::InstallDirectory.new(target_dir)
 
-    expect { install.prepare('module', '1.0.1') }.should raise_error("unknown error")
+    expect { install.prepare('module', '1.0.1') }.to raise_error("unknown error")
   end
 
   it "(#15202) simply re-raises an unknown system call error" do
@@ -52,7 +58,7 @@ describe Puppet::ModuleTool::InstallDirectory do
 
     install = Puppet::ModuleTool::InstallDirectory.new(target_dir)
 
-    expect { install.prepare('module', '1.0.1') }.should raise_error(SystemCallError)
+    expect { install.prepare('module', '1.0.1') }.to raise_error(SystemCallError)
   end
 
   def the_directory(name, options)

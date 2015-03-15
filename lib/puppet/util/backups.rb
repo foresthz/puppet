@@ -10,7 +10,7 @@ module Puppet::Util::Backups
 
     # let the path be specified
     file ||= self[:path]
-    return true unless FileTest.exists?(file)
+    return true unless Puppet::FileSystem.exist?(file)
 
     return(self.bucket ? perform_backup_with_bucket(file) : perform_backup_with_backuplocal(file, self[:backup]))
   end
@@ -19,7 +19,7 @@ module Puppet::Util::Backups
 
   def perform_backup_with_bucket(fileobj)
     file = (fileobj.class == String) ? fileobj : fileobj.name
-    case File.stat(file).ftype
+    case Puppet::FileSystem.lstat(file).ftype
     when "directory"
       # we don't need to backup directories when recurse is on
       return true if self[:recurse]
@@ -40,15 +40,13 @@ module Puppet::Util::Backups
     begin
       bfile = file + backup
 
-      # Ruby 1.8.1 requires the 'preserve' addition, but
-      # later versions do not appear to require it.
       # N.B. cp_r works on both files and directories
       FileUtils.cp_r(file, bfile, :preserve => true)
       return true
     rescue => detail
       # since they said they want a backup, let's error out
       # if we couldn't make one
-      self.fail "Could not back #{file} up: #{detail.message}"
+      self.fail Puppet::Error, "Could not back #{file} up: #{detail.message}", detail
     end
   end
 
@@ -60,7 +58,7 @@ module Puppet::Util::Backups
     end
 
     begin
-      stat = File.send(method, newfile)
+      stat = Puppet::FileSystem.send(method, newfile)
     rescue Errno::ENOENT
       return
     end
@@ -72,11 +70,11 @@ module Puppet::Util::Backups
     info "Removing old backup of type #{stat.ftype}"
 
     begin
-      File.unlink(newfile)
+      Puppet::FileSystem.unlink(newfile)
     rescue => detail
       message = "Could not remove old backup: #{detail}"
       self.log_exception(detail, message)
-      self.fail message
+      self.fail Puppet::Error, message, detail
     end
   end
 

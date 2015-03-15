@@ -1,11 +1,11 @@
 require 'puppet/node'
 require 'puppet/resource/catalog'
 require 'puppet/indirector/code'
+require 'puppet/util/profiler'
 require 'yaml'
 
 class Puppet::Resource::Catalog::Compiler < Puppet::Indirector::Code
-  desc "Puppet's catalog compilation interface, and its back-end is
-    Puppet's compiler"
+  desc "Compiles catalogs on demand using Puppet's compiler."
 
   include Puppet::Util
 
@@ -13,17 +13,31 @@ class Puppet::Resource::Catalog::Compiler < Puppet::Indirector::Code
 
   def extract_facts_from_request(request)
     return unless text_facts = request.options[:facts]
-    raise ArgumentError, "Facts but no fact format provided for #{request.name}" unless format = request.options[:facts_format]
-
-    # If the facts were encoded as yaml, then the param reconstitution system
-    # in Network::HTTP::Handler will automagically deserialize the value.
-    if text_facts.is_a?(Puppet::Node::Facts)
-      facts = text_facts
-    else
-      facts = Puppet::Node::Facts.convert_from(format, text_facts)
+    unless format = request.options[:facts_format]
+      raise ArgumentError, "Facts but no fact format provided for #{request.key}"
     end
-    facts.add_timestamp
-    Puppet::Node::Facts.indirection.save(facts)
+
+    Puppet::Util::Profiler.profile("Found facts", [:compiler, :find_facts]) do
+      # If the facts were encoded as yaml, then the param reconstitution system
+      # in Network::HTTP::Handler will automagically deserialize the value.
+      if text_facts.is_a?(Puppet::Node::Facts)
+        facts = text_facts
+      else
+        # We unescape here because the corresponding code in Puppet::Configurer::FactHandler escapes
+        facts = Puppet::Node::Facts.convert_from(format, CGI.unescape(text_facts))
+      end
+
+      unless facts.name == request.key
+        raise Puppet::Error, "Catalog for #{request.key.inspect} was requested with fact definition for the wrong node (#{facts.name.inspect})."
+      end
+
+      options = {
+        :environment => request.environment,
+        :transaction_uuid => request.options[:transaction_uuid],
+      }
+
+      Puppet::Node::Facts.indirection.save(facts, nil, options)
+    end
   end
 
   # Compile a node's catalog.
@@ -31,6 +45,7 @@ class Puppet::Resource::Catalog::Compiler < Puppet::Indirector::Code
     extract_facts_from_request(request)
 
     node = node_from_request(request)
+    node.trusted_data = Puppet.lookup(:trusted_information) { Puppet::Context::TrustedInformation.local(node) }.to_h
 
     if catalog = compile(node)
       return catalog
@@ -48,7 +63,9 @@ class Puppet::Resource::Catalog::Compiler < Puppet::Indirector::Code
   end
 
   def initialize
-    set_server_facts
+    Puppet::Util::Profiler.profile("Setup server facts for compiling", [:compiler, :init_server_facts]) do
+      set_server_facts
+    end
   end
 
   # Is our compiler part of a network, or are we just local?
@@ -70,14 +87,14 @@ class Puppet::Resource::Catalog::Compiler < Puppet::Indirector::Code
     str += " in environment #{node.environment}" if node.environment
     config = nil
 
-    loglevel = networked? ? :notice : :none
-
-    benchmark(loglevel, str) do
-      begin
-        config = Puppet::Parser::Compiler.compile(node)
-      rescue Puppet::Error => detail
-        Puppet.err(detail.to_s) if networked?
-        raise
+    benchmark(:notice, str) do
+      Puppet::Util::Profiler.profile(str, [:compiler, :compile, node.environment, node.name]) do
+        begin
+          config = Puppet::Parser::Compiler.compile(node)
+        rescue Puppet::Error => detail
+          Puppet.err(detail.to_s) if networked?
+          raise
+        end
       end
     end
 
@@ -85,27 +102,36 @@ class Puppet::Resource::Catalog::Compiler < Puppet::Indirector::Code
   end
 
   # Turn our host name into a node object.
-  def find_node(name, *args)
-    begin
-      return nil unless node = Puppet::Node.indirection.find(name, *args)
-    rescue => detail
-      message = "Failed when searching for node #{name}: #{detail}"
-      Puppet.log_exception(detail, message)
-      raise Puppet::Error, message
+  def find_node(name, environment, transaction_uuid)
+    Puppet::Util::Profiler.profile("Found node information", [:compiler, :find_node]) do
+      node = nil
+      begin
+        node = Puppet::Node.indirection.find(name, :environment => environment,
+                                             :transaction_uuid => transaction_uuid)
+      rescue => detail
+        message = "Failed when searching for node #{name}: #{detail}"
+        Puppet.log_exception(detail, message)
+        raise Puppet::Error, message, detail.backtrace
+      end
+
+
+      # Add any external data to the node.
+      if node
+        add_node_data(node)
+      end
+      node
     end
-
-
-    # Add any external data to the node.
-    add_node_data(node)
-
-    node
   end
 
   # Extract the node from the request, or use the request
   # to find the node.
   def node_from_request(request)
     if node = request.options[:use_node]
-      return node
+      if request.remote?
+        raise Puppet::Error, "Invalid option use_node for a remote request"
+      else
+        return node
+      end
     end
 
     # We rely on our authorization system to determine whether the connected
@@ -113,10 +139,10 @@ class Puppet::Resource::Catalog::Compiler < Puppet::Indirector::Code
     # By default the REST authorization system makes sure only the connected node
     # can compile his catalog.
     # This allows for instance monitoring systems or puppet-load to check several
-    # node's catalog with only one certificate and a modification to auth.conf 
+    # node's catalog with only one certificate and a modification to auth.conf
     # If no key is provided we can only compile the currently connected node.
     name = request.key || request.node
-    if node = find_node(name, :environment => request.environment)
+    if node = find_node(name, request.environment, request.options[:transaction_uuid])
       return node
     end
 

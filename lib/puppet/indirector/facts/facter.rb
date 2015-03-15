@@ -1,82 +1,82 @@
 require 'puppet/node/facts'
 require 'puppet/indirector/code'
-require 'puppet/util/config_timeout'
 
 class Puppet::Node::Facts::Facter < Puppet::Indirector::Code
-  extend Puppet::Util::ConfigTimeout
-
   desc "Retrieve facts from Facter.  This provides a somewhat abstract interface
     between Puppet and Facter.  It's only `somewhat` abstract because it always
     returns the local host's facts, regardless of what you attempt to find."
 
-
-  # Clear out all of the loaded facts. Reload facter but not puppet facts.
-  # NOTE: This is clumsy and shouldn't be required for later (1.5.x) versions
-  # of Facter.
-  def self.reload_facter
-    Facter.clear
-
-    # Reload everything.
-    if Facter.respond_to? :loadfacts
-      Facter.loadfacts
-    elsif Facter.respond_to? :load
-      Facter.load
-    else
-      Puppet.warning "You should upgrade your version of Facter to at least 1.3.8"
-    end
-  end
-
-  def self.load_fact_plugins
-    # Add any per-module fact directories to the factpath
-    module_fact_dirs = Puppet[:modulepath].split(File::PATH_SEPARATOR).collect do |d|
-      ["lib", "plugins"].map do |subdirectory|
-        Dir.glob("#{d}/*/#{subdirectory}/facter")
-      end
-    end.flatten
-    dirs = module_fact_dirs + Puppet[:factpath].split(File::PATH_SEPARATOR)
-    x = dirs.uniq.each do |dir|
-      load_facts_in_dir(dir)
-    end
-  end
-
-  def self.load_facts_in_dir(dir)
-    return unless FileTest.directory?(dir)
-
-    Dir.chdir(dir) do
-      Dir.glob("*.rb").each do |file|
-        fqfile = ::File.join(dir, file)
-        begin
-          Puppet.info "Loading facts in #{fqfile}"
-          ::Timeout::timeout(self.timeout_interval) do
-            load file
-          end
-        rescue SystemExit,NoMemoryError
-          raise
-        rescue Exception => detail
-          Puppet.warning "Could not load fact file #{fqfile}: #{detail}"
-        end
-      end
-    end
+  def allow_remote_requests?
+    false
   end
 
   def destroy(facts)
-    raise Puppet::DevError, "You cannot destroy facts in the code store; it is only used for getting facts from Facter"
-  end
-
-  # Look a host's facts up in Facter.
-  def find(request)
-    self.class.reload_facter
-    self.class.load_fact_plugins
-    result = Puppet::Node::Facts.new(request.key, Facter.to_hash)
-
-    result.add_local_facts
-    result.stringify
-    result.downcase_if_necessary
-
-    result
+    raise Puppet::DevError, 'You cannot destroy facts in the code store; it is only used for getting facts from Facter'
   end
 
   def save(facts)
-    raise Puppet::DevError, "You cannot save facts to the code store; it is only used for getting facts from Facter"
+    raise Puppet::DevError, 'You cannot save facts to the code store; it is only used for getting facts from Facter'
+  end
+
+  # Lookup a host's facts up in Facter.
+  def find(request)
+    Facter.reset
+    self.class.setup_external_search_paths(request) if Puppet.features.external_facts?
+    self.class.setup_search_paths(request)
+
+    result = Puppet::Node::Facts.new(request.key, Facter.to_hash)
+    result.add_local_facts
+    result.sanitize
+    result
+  end
+
+  private
+
+  def self.setup_search_paths(request)
+    # Add any per-module fact directories to facter's search path
+    dirs = request.environment.modulepath.collect do |dir|
+      ['lib', 'plugins'].map do |subdirectory|
+        Dir.glob("#{dir}/*/#{subdirectory}/facter")
+      end
+    end.flatten + Puppet[:factpath].split(File::PATH_SEPARATOR)
+
+    dirs = dirs.select do |dir|
+      next false unless FileTest.directory?(dir)
+
+      # Even through we no longer directly load facts in the terminus,
+      # print out each .rb in the facts directory as module
+      # developers may find that information useful for debugging purposes
+      if Puppet::Util::Log.sendlevel?(:info)
+        Puppet.info "Loading facts"
+        Dir.glob("#{dir}/*.rb").each do |file|
+          Puppet.debug "Loading facts from #{file}"
+        end
+      end
+
+      true
+    end
+
+    Facter.search *dirs
+  end
+
+  def self.setup_external_search_paths(request)
+    # Add any per-module external fact directories to facter's external search path
+    dirs = []
+    request.environment.modules.each do |m|
+      if m.has_external_facts?
+        dir = m.plugin_fact_directory
+        Puppet.debug "Loading external facts from #{dir}"
+        dirs << dir
+      end
+    end
+
+    # Add system external fact directory if it exists
+    if FileTest.directory?(Puppet[:pluginfactdest])
+      dir = Puppet[:pluginfactdest]
+      Puppet.debug "Loading external facts from #{dir}"
+      dirs << dir
+    end
+
+    Facter.search_external dirs
   end
 end

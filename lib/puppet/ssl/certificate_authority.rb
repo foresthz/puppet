@@ -1,6 +1,7 @@
-require 'monitor'
 require 'puppet/ssl/host'
 require 'puppet/ssl/certificate_request'
+require 'puppet/ssl/certificate_signer'
+require 'puppet/util'
 
 # The class that knows how to sign certificates.  It creates
 # a 'special' SSL::Host whose name is 'ca', thus indicating
@@ -24,9 +25,8 @@ class Puppet::SSL::CertificateAuthority
   require 'puppet/ssl/inventory'
   require 'puppet/ssl/certificate_revocation_list'
   require 'puppet/ssl/certificate_authority/interface'
+  require 'puppet/ssl/certificate_authority/autosign_command'
   require 'puppet/network/authstore'
-
-  extend MonitorMixin
 
   class CertificateVerificationError < RuntimeError
     attr_accessor :error_code
@@ -37,9 +37,7 @@ class Puppet::SSL::CertificateAuthority
   end
 
   def self.singleton_instance
-    synchronize do
-      @singleton_instance ||= new
-    end
+    @singleton_instance ||= new
   end
 
   class CertificateSigningError < RuntimeError
@@ -51,64 +49,56 @@ class Puppet::SSL::CertificateAuthority
   end
 
   def self.ca?
-    return false unless Puppet[:ca]
-    return false unless Puppet.run_mode.master?
-    true
+    # running as ca? - ensure boolean answer
+    !!(Puppet[:ca] && Puppet.run_mode.master?)
   end
 
-  # If this process can function as a CA, then return a singleton
-  # instance.
+  # If this process can function as a CA, then return a singleton instance.
   def self.instance
-    return nil unless ca?
-
-    singleton_instance
+    ca? ? singleton_instance : nil
   end
 
   attr_reader :name, :host
 
-  # Create and run an applicator.  I wanted to build an interface where you could do
-  # something like 'ca.apply(:generate).to(:all) but I don't think it's really possible.
-  def apply(method, options)
-    raise ArgumentError, "You must specify the hosts to apply to; valid values are an array or the symbol :all" unless options[:to]
-    applier = Interface.new(method, options)
-    applier.apply(self)
-  end
-
-  # If autosign is configured, then autosign all CSRs that match our configuration.
-  def autosign
-    return unless auto = autosign?
-
-    store = nil
-    store = autosign_store(auto) if auto != true
-
-    Puppet::SSL::CertificateRequest.indirection.search("*").each do |csr|
-      sign(csr.name) if auto == true or store.allowed?(csr.name, "127.1.1.1")
+  # If autosign is configured, autosign the csr we are passed.
+  # @param csr [Puppet::SSL::CertificateRequest] The csr to sign.
+  # @return [Void]
+  # @api private
+  def autosign(csr)
+    if autosign?(csr)
+      Puppet.info "Autosigning #{csr.name}"
+      sign(csr.name)
     end
   end
 
-  # Do we autosign?  This returns true, false, or a filename.
-  def autosign?
+  # Determine if a CSR can be autosigned by the autosign store or autosign command
+  #
+  # @param csr [Puppet::SSL::CertificateRequest] The CSR to check
+  # @return [true, false]
+  # @api private
+  def autosign?(csr)
     auto = Puppet[:autosign]
-    return false if ['false', false].include?(auto)
-    return true if ['true', true].include?(auto)
 
-    raise ArgumentError, "The autosign configuration '#{auto}' must be a fully qualified file" unless auto =~ /^\//
-    FileTest.exist?(auto) && auto
+    decider = case auto
+      when false
+        AutosignNever.new
+      when true
+        AutosignAlways.new
+      else
+        file = Puppet::FileSystem.pathname(auto)
+        if Puppet::FileSystem.executable?(file)
+          Puppet::SSL::CertificateAuthority::AutosignCommand.new(auto)
+        elsif Puppet::FileSystem.exist?(file)
+          AutosignConfig.new(file)
+        else
+          AutosignNever.new
+        end
+      end
+
+    decider.allowed?(csr)
   end
 
-  # Create an AuthStore for autosigning.
-  def autosign_store(file)
-    auth = Puppet::Network::AuthStore.new
-    File.readlines(file).each do |line|
-      next if line =~ /^\s*#/
-      next if line =~ /^\s*$/
-      auth.allow(line.chomp)
-    end
-
-    auth
-  end
-
-  # Retrieve (or create, if necessary) the certificate revocation list.
+  # Retrieves (or creates, if necessary) the certificate revocation list.
   def crl
     unless defined?(@crl)
       unless @crl = Puppet::SSL::CertificateRevocationList.indirection.find(Puppet::SSL::CA_NAME)
@@ -120,22 +110,24 @@ class Puppet::SSL::CertificateAuthority
     @crl
   end
 
-  # Delegate this to our Host class.
+  # Delegates this to our Host class.
   def destroy(name)
     Puppet::SSL::Host.destroy(name)
   end
 
-  # Generate a new certificate.
+  # Generates a new certificate.
+  # @return Puppet::SSL::Certificate
   def generate(name, options = {})
     raise ArgumentError, "A Certificate already exists for #{name}" if Puppet::SSL::Certificate.indirection.find(name)
-    host = Puppet::SSL::Host.new(name)
 
     # Pass on any requested subjectAltName field.
     san = options[:dns_alt_names]
 
     host = Puppet::SSL::Host.new(name)
     host.generate_certificate_request(:dns_alt_names => san)
-    sign(name, !!san)
+    # CSR may have been implicitly autosigned, generating a certificate
+    # Or sign explicitly
+    host.certificate || sign(name, !!san)
   end
 
   # Generate our CA certificate.
@@ -180,9 +172,9 @@ class Puppet::SSL::CertificateAuthority
     20.times { pass += (rand(74) + 48).chr }
 
     begin
-      Puppet.settings.write(:capass) { |f| f.print pass }
+      Puppet.settings.setting(:capass).open('w') { |f| f.print pass }
     rescue Errno::EACCES => detail
-      raise Puppet::Error, "Could not write CA password: #{detail}"
+      raise Puppet::Error, "Could not write CA password: #{detail}", detail.backtrace
     end
 
     @password = pass
@@ -190,34 +182,56 @@ class Puppet::SSL::CertificateAuthority
     pass
   end
 
-  # List all signed certificates.
-  def list
-    Puppet::SSL::Certificate.indirection.search("*").collect { |c| c.name }
+  # Lists the names of all signed certificates.
+  #
+  # @param name [Array<string>] filter to cerificate names
+  #
+  # @return [Array<String>]
+  def list(name='*')
+    list_certificates(name).collect { |c| c.name }
+  end
+
+  # Return all the certificate objects as found by the indirector
+  # API for PE license checking.
+  #
+  # Created to prevent the case of reading all certs from disk, getting
+  # just their names and verifying the cert for each name, which then
+  # causes the cert to again be read from disk.
+  #
+  # @author Jeff Weiss <jeff.weiss@puppetlabs.com>
+  # @api Puppet Enterprise Licensing
+  #
+  # @param name [Array<string>] filter to cerificate names
+  #
+  # @return [Array<Puppet::SSL::Certificate>]
+  def list_certificates(name='*')
+    Puppet::SSL::Certificate.indirection.search(name)
   end
 
   # Read the next serial from the serial file, and increment the
   # file so this one is considered used.
   def next_serial
-    serial = nil
+    serial = 1
+    Puppet.settings.setting(:serial).exclusive_open('a+') do |f|
+      f.rewind
+      serial = f.read.chomp.hex
+      if serial == 0
+        serial = 1
+      end
 
-    # This is slightly odd.  If the file doesn't exist, our readwritelock creates
-    # it, but with a mode we can't actually read in some cases.  So, use
-    # a default before the lock.
-    serial = 0x1 unless FileTest.exist?(Puppet[:serial])
-
-    Puppet.settings.readwritelock(:serial) { |f|
-      serial ||= File.read(Puppet.settings[:serial]).chomp.hex if FileTest.exist?(Puppet[:serial])
+      f.truncate(0)
+      f.rewind
 
       # We store the next valid serial, not the one we just used.
       f << "%04X" % (serial + 1)
-    }
+    end
 
     serial
   end
 
   # Does the password file exist?
   def password?
-    FileTest.exist? Puppet[:capass]
+    Puppet::FileSystem.exist?(Puppet[:capass])
   end
 
   # Print a given host's certificate as text.
@@ -229,12 +243,23 @@ class Puppet::SSL::CertificateAuthority
   def revoke(name)
     raise ArgumentError, "Cannot revoke certificates when the CRL is disabled" unless crl
 
-    if cert = Puppet::SSL::Certificate.indirection.find(name)
-      serial = cert.content.serial
-    elsif ! serial = inventory.serial(name)
+    cert = Puppet::SSL::Certificate.indirection.find(name)
+
+    serials = if cert
+                [cert.content.serial]
+              elsif name =~ /^0x[0-9A-Fa-f]+$/
+                [name.hex]
+              else
+                inventory.serials(name)
+              end
+
+    if serials.empty?
       raise ArgumentError, "Could not find a serial number for #{name}"
     end
-    crl.revoke(serial, host.key.content)
+
+    serials.each do |s|
+      crl.revoke(s, host.key.content)
+    end
   end
 
   # This initializes our CA so it actually works.  This should be a private
@@ -274,7 +299,9 @@ class Puppet::SSL::CertificateAuthority
     cert = Puppet::SSL::Certificate.new(hostname)
     cert.content = Puppet::SSL::CertificateFactory.
       build(cert_type, csr, issuer, next_serial)
-    cert.content.sign(host.key.content, OpenSSL::Digest::SHA256.new)
+
+    signer = Puppet::SSL::CertificateSigner.new
+    signer.sign(cert.content, host.key.content)
 
     Puppet.notice "Signed certificate request for #{hostname}"
 
@@ -295,12 +322,25 @@ class Puppet::SSL::CertificateAuthority
 
   def check_internal_signing_policies(hostname, csr, allow_dns_alt_names)
     # Reject unknown request extensions.
-    unknown_req = csr.request_extensions.
-      reject {|x| RequestExtensionWhitelist.include? x["oid"] }
+    unknown_req = csr.request_extensions.reject do |x|
+      RequestExtensionWhitelist.include? x["oid"] or
+        Puppet::SSL::Oids.subtree_of?('ppRegCertExt', x["oid"], true) or
+        Puppet::SSL::Oids.subtree_of?('ppPrivCertExt', x["oid"], true)
+    end
 
     if unknown_req and not unknown_req.empty?
       names = unknown_req.map {|x| x["oid"] }.sort.uniq.join(", ")
       raise CertificateSigningError.new(hostname), "CSR has request extensions that are not permitted: #{names}"
+    end
+
+    # Do not sign misleading CSRs
+    cn = csr.content.subject.to_a.assoc("CN")[1]
+    if hostname != cn
+      raise CertificateSigningError.new(hostname), "CSR subject common name #{cn.inspect} does not match expected certname #{hostname.inspect}"
+    end
+
+    if hostname !~ Puppet::SSL::Base::VALID_CERTNAME
+      raise CertificateSigningError.new(hostname), "CSR #{hostname.inspect} subject contains unprintable or non-ASCII characters"
     end
 
     # Wildcards: we don't allow 'em at any point.
@@ -310,6 +350,10 @@ class Puppet::SSL::CertificateAuthority
     # is what we expect where we expect it.
     if csr.content.subject.to_s.include? '*'
       raise CertificateSigningError.new(hostname), "CSR subject contains a wildcard, which is not allowed: #{csr.content.subject.to_s}"
+    end
+
+    unless csr.content.verify(csr.content.public_key)
+      raise CertificateSigningError.new(hostname), "CSR contains a public key that does not correspond to the signing key"
     end
 
     unless csr.subject_alt_names.empty?
@@ -334,16 +378,89 @@ class Puppet::SSL::CertificateAuthority
     return true                 # good enough for us!
   end
 
-  # Verify a given host's certificate.
+  # Utility method for optionally caching the X509 Store for verifying a
+  # large number of certificates in a short amount of time--exactly the
+  # case we have during PE license checking.
+  #
+  # @example Use the cached X509 store
+  #   x509store(:cache => true)
+  #
+  # @example Use a freshly create X509 store
+  #   x509store
+  #   x509store(:cache => false)
+  #
+  # @param [Hash] options the options used for retrieving the X509 Store
+  # @option options [Boolean] :cache whether or not to use a cached version
+  #   of the X509 Store
+  #
+  # @return [OpenSSL::X509::Store]
+  def x509_store(options = {})
+    if (options[:cache])
+      return @x509store unless @x509store.nil?
+      @x509store = create_x509_store
+    else
+      create_x509_store
+    end
+  end
+  private :x509_store
+
+  # Creates a brand new OpenSSL::X509::Store with the appropriate
+  # Certificate Revocation List and flags
+  #
+  # @return [OpenSSL::X509::Store]
+  def create_x509_store
+    store = OpenSSL::X509::Store.new()
+    store.add_file(Puppet[:cacert])
+    store.add_crl(crl.content) if self.crl
+    store.purpose = OpenSSL::X509::PURPOSE_SSL_CLIENT
+    if Puppet.settings[:certificate_revocation]
+      store.flags = OpenSSL::X509::V_FLAG_CRL_CHECK_ALL | OpenSSL::X509::V_FLAG_CRL_CHECK
+    end
+    store
+  end
+  private :create_x509_store
+
+  # Utility method which is API for PE license checking.
+  # This is used rather than `verify` because
+  #  1) We have already read the certificate from disk into memory.
+  #     To read the certificate from disk again is just wasteful.
+  #  2) Because we're checking a large number of certificates against
+  #     a transient CertificateAuthority, we can relatively safely cache
+  #     the X509 Store that actually does the verification.
+  #
+  # Long running instances of CertificateAuthority will certainly
+  # want to use `verify` because it will recreate the X509 Store with
+  # the absolutely latest CRL.
+  #
+  # Additionally, this method explicitly returns a boolean whereas
+  # `verify` will raise an error if the certificate has been revoked.
+  #
+  # @author Jeff Weiss <jeff.weiss@puppetlabs.com>
+  # @api Puppet Enterprise Licensing
+  #
+  # @param cert [Puppet::SSL::Certificate] the certificate to check validity of
+  #
+  # @return [Boolean] true if signed, false if unsigned or revoked
+  def certificate_is_alive?(cert)
+    x509_store(:cache => true).verify(cert.content)
+  end
+
+  # Verify a given host's certificate. The certname is passed in, and
+  # the indirector will be used to locate the actual contents of the
+  # certificate with that name.
+  #
+  # @param name [String] certificate name to verify
+  #
+  # @raise [ArgumentError] if the certificate name cannot be found
+  #   (i.e. doesn't exist or is unsigned)
+  # @raise [CertificateVerficationError] if the certificate has been revoked
+  #
+  # @return [Boolean] true if signed, there are no cases where false is returned
   def verify(name)
     unless cert = Puppet::SSL::Certificate.indirection.find(name)
       raise ArgumentError, "Could not find a certificate for #{name}"
     end
-    store = OpenSSL::X509::Store.new
-    store.add_file Puppet[:cacert]
-    store.add_crl crl.content if self.crl
-    store.purpose = OpenSSL::X509::PURPOSE_SSL_CLIENT
-    store.flags = OpenSSL::X509::V_FLAG_CRL_CHECK_ALL|OpenSSL::X509::V_FLAG_CRL_CHECK if Puppet.settings[:certificate_revocation]
+    store = x509_store
 
     raise CertificateVerificationError.new(store.error), store.error_string unless store.verify(cert.content)
   end
@@ -358,5 +475,43 @@ class Puppet::SSL::CertificateAuthority
   # List the waiting certificate requests.
   def waiting?
     Puppet::SSL::CertificateRequest.indirection.search("*").collect { |r| r.name }
+  end
+
+  # @api private
+  class AutosignAlways
+    def allowed?(csr)
+      true
+    end
+  end
+
+  # @api private
+  class AutosignNever
+    def allowed?(csr)
+      false
+    end
+  end
+
+  # @api private
+  class AutosignConfig
+    def initialize(config_file)
+      @config = config_file
+    end
+
+    def allowed?(csr)
+      autosign_store.allowed?(csr.name, '127.1.1.1')
+    end
+
+    private
+
+    def autosign_store
+      auth = Puppet::Network::AuthStore.new
+      Puppet::FileSystem.each_line(@config) do |line|
+        next if line =~ /^\s*#/
+        next if line =~ /^\s*$/
+        auth.allow(line.chomp)
+      end
+
+      auth
+    end
   end
 end

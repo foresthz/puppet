@@ -16,7 +16,7 @@ class CheckPuppet
     :interval  => 30,
   }
 
-  o = OptionParser.new do |o|
+  OptionParser.new do |o|
     o.set_summary_indent('  ')
     o.banner =    "Usage: #{script_name} [OPTIONS]"
     o.define_head "The check_puppet Nagios plug-in checks that specified Puppet process is running and the state file is no older than specified interval."
@@ -27,17 +27,17 @@ class CheckPuppet
         o.on(
           "-s", "--statefile=statefile", String, "The state file",
 
-    "Default: #{OPTIONS[:statefile]}") { |OPTIONS[:statefile]| }
+    "Default: #{OPTIONS[:statefile]}") { |op| OPTIONS[:statefile] = op }
 
       o.on(
         "-p", "--process=processname", String, "The process to check",
 
-    "Default: #{OPTIONS[:process]}")   { |OPTIONS[:process]| }
+    "Default: #{OPTIONS[:process]}")   { |op| OPTIONS[:process] = op }
 
       o.on(
         "-i", "--interval=value", Integer,
 
-    "Default: #{OPTIONS[:interval]} minutes")  { |OPTIONS[:interval]| }
+    "Default: #{OPTIONS[:interval]} minutes")  { |op| OPTIONS[:interval] = op }
 
     o.separator ""
     o.on_tail("-h", "--help", "Show this help message.") do
@@ -99,16 +99,16 @@ class CheckPuppet
       process = "process #{OPTIONS[:process]} is not running"
     end
 
-    case @proc or @file
-    when 0
-      status = "OK"
-      exitcode = 0
-    when 2
+    case
+    when (@proc == 2 or @file == 2)
       status = "CRITICAL"
       exitcode = 2
-    when 3
+    when (@proc == 0 and @file == 0)
+      status = "OK"
+      exitcode = 0
+    else
       status = "UNKNOWN"
-      exitcide = 3
+      exitcode = 3
     end
 
     puts "PUPPET #{status}: #{process}, #{state}"

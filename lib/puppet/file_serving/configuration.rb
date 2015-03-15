@@ -1,20 +1,16 @@
-require 'monitor'
 require 'puppet'
 require 'puppet/file_serving'
 require 'puppet/file_serving/mount'
 require 'puppet/file_serving/mount/file'
 require 'puppet/file_serving/mount/modules'
 require 'puppet/file_serving/mount/plugins'
+require 'puppet/file_serving/mount/pluginfacts'
 
 class Puppet::FileServing::Configuration
   require 'puppet/file_serving/configuration/parser'
 
-  extend MonitorMixin
-
   def self.configuration
-    synchronize do
-      @configuration ||= new
-    end
+    @configuration ||= new
   end
 
   Mount = Puppet::FileServing::Mount
@@ -29,16 +25,6 @@ class Puppet::FileServing::Configuration
   def find_mount(mount_name, environment)
     # Reparse the configuration if necessary.
     readconfig
-
-    if mount = mounts[mount_name]
-      return mount
-    end
-
-    if environment.module(mount_name)
-      Puppet.deprecation_warning "DEPRECATION NOTICE: Files found in modules without specifying 'modules' in file path will be deprecated in the next major release.  Please fix module '#{mount_name}' when no 0.24.x clients are present"
-      return mounts["modules"]
-    end
-
     # This can be nil.
     mounts[mount_name]
   end
@@ -64,7 +50,8 @@ class Puppet::FileServing::Configuration
 
     mount_name, path = request.key.split(File::Separator, 2)
 
-    raise(ArgumentError, "Cannot find file: Invalid path '#{mount_name}'") unless mount_name =~ %r{^[-\w]+$}
+    raise(ArgumentError, "Cannot find file: Invalid mount '#{mount_name}'") unless mount_name =~ %r{^[-\w]+$}
+    raise(ArgumentError, "Cannot find file: Invalid relative path '#{path}'") if path and path.split('/').include?('..')
 
     return nil unless mount = find_mount(mount_name, request.environment)
     if mount.name == "modules" and mount_name != "modules"
@@ -93,13 +80,15 @@ class Puppet::FileServing::Configuration
     @mounts["modules"].allow('*') if @mounts["modules"].empty?
     @mounts["plugins"] ||= Mount::Plugins.new("plugins")
     @mounts["plugins"].allow('*') if @mounts["plugins"].empty?
+    @mounts["pluginfacts"] ||= Mount::PluginFacts.new("pluginfacts")
+    @mounts["pluginfacts"].allow('*') if @mounts["pluginfacts"].empty?
   end
 
   # Read the configuration file.
   def readconfig(check = true)
     config = Puppet[:fileserverconfig]
 
-    return unless FileTest.exists?(config)
+    return unless Puppet::FileSystem.exist?(config)
 
     @parser ||= Puppet::FileServing::Configuration::Parser.new(config)
 

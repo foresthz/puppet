@@ -1,10 +1,7 @@
 require 'puppet/configurer'
 require 'puppet/resource/catalog'
-require 'puppet/util/config_timeout'
 
 class Puppet::Configurer::Downloader
-  extend Puppet::Util::ConfigTimeout
-  
   attr_reader :name, :path, :source, :ignore
 
   # Evaluate our download, returning the list of changed values.
@@ -13,30 +10,26 @@ class Puppet::Configurer::Downloader
 
     files = []
     begin
-      ::Timeout.timeout(self.class.timeout_interval) do
-        catalog.apply do |trans|
-          trans.changed?.find_all do |resource|
-            yield resource if block_given?
-            files << resource[:path]
-          end
+      catalog.apply do |trans|
+        trans.changed?.each do |resource|
+          yield resource if block_given?
+          files << resource[:path]
         end
       end
-    rescue Puppet::Error, Timeout::Error => detail
+    rescue Puppet::Error => detail
       Puppet.log_exception(detail, "Could not retrieve #{name}: #{detail}")
     end
-
     files
   end
 
-  def initialize(name, path, source, ignore = nil, environment = nil)
-    @name, @path, @source, @ignore, @environment = name, path, source, ignore, environment
+  def initialize(name, path, source, ignore = nil, environment = nil, source_permissions = :ignore)
+    @name, @path, @source, @ignore, @environment, @source_permissions = name, path, source, ignore, environment, source_permissions
   end
 
   def catalog
-    catalog = Puppet::Resource::Catalog.new
+    catalog = Puppet::Resource::Catalog.new("PluginSync", @environment)
     catalog.host_config = false
     catalog.add_resource(file)
-    catalog.environment = @environment
     catalog
   end
 
@@ -48,24 +41,27 @@ class Puppet::Configurer::Downloader
 
   private
 
-  require 'sys/admin' if Puppet.features.microsoft_windows?
-
   def default_arguments
-    {
+    defargs = {
       :path => path,
       :recurse => true,
+      :links => :follow,
       :source => source,
+      :source_permissions => @source_permissions,
       :tag => name,
       :purge => true,
       :force => true,
       :backup => false,
       :noop => false
-    }.merge(
-      Puppet.features.microsoft_windows? ? {} :
-      {
-        :owner => Process.uid,
-        :group => Process.gid
-      }
-    )
+    }
+    if !Puppet.features.microsoft_windows?
+      defargs.merge!(
+        {
+          :owner => Process.uid,
+          :group => Process.gid
+        }
+      )
+    end
+    return defargs
   end
 end

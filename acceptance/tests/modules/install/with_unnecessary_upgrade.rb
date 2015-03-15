@@ -1,54 +1,42 @@
-begin test_name "puppet module install (with unnecessary dependency upgrade)"
+test_name "puppet module install (with unnecessary dependency upgrade)"
+require 'puppet/acceptance/module_utils'
+extend Puppet::Acceptance::ModuleUtils
+
+hosts.each do |host|
+  skip_test "skip tests requiring forge certs on solaris and aix" if host['platform'] =~ /solaris/
+end
+
+module_author = "pmtacceptance"
+module_name   = "java"
+module_dependencies   = ["stdlub"]
+
+orig_installed_modules = get_installed_modules_for_hosts hosts
+teardown do
+  rm_installed_modules_from_hosts orig_installed_modules, (get_installed_modules_for_hosts hosts)
+end
 
 step 'Setup'
-require 'resolv'; ip = Resolv.getaddress('forge-dev.puppetlabs.lan')
-apply_manifest_on master, "host { 'forge.puppetlabs.com': ip => '#{ip}' }"
-apply_manifest_on master, "file { ['/etc/puppet/modules', '/usr/share/puppet/modules']: ensure => directory, recurse => true, purge => true, force => true }"
+
+default_moduledir = get_default_modulepath_for_host(master)
+
+stub_forge_on(master)
 
 step "Install an older module version"
-on master, puppet("module install pmtacceptance-java --version 1.7.0") do
-  assert_output <<-OUTPUT
-    Preparing to install into /etc/puppet/modules ...
-    Downloading from http://forge.puppetlabs.com ...
-    Installing -- do not interrupt ...
-    /etc/puppet/modules
-    └─┬ pmtacceptance-java (\e[0;36mv1.7.0\e[0m)
-      └── pmtacceptance-stdlib (\e[0;36mv1.0.0\e[0m)
-  OUTPUT
+module_version = '1.7.0'
+on master, puppet("module install #{module_author}-#{module_name} --version #{module_version}") do
+  assert_match(/#{module_author}-#{module_name} \(.*v#{module_version}.*\)/, stdout,
+        "Notice of specific version installed was not displayed")
 end
-
-on master, puppet('module list') do
-  assert_output <<-OUTPUT
-    /etc/puppet/modules
-    ├── pmtacceptance-java (\e[0;36mv1.7.0\e[0m)
-    └── pmtacceptance-stdlib (\e[0;36mv1.0.0\e[0m)
-    /usr/share/puppet/modules (no modules installed)
-  OUTPUT
-end
+on master, "grep \"version '#{module_version}'\" #{default_moduledir}/#{module_name}/Modulefile"
 
 
 step "Install a module that depends on a dependency that could be upgraded, but already satisfies constraints"
-on master, puppet("module install pmtacceptance-apollo") do
-  assert_output <<-OUTPUT
-    Preparing to install into /etc/puppet/modules ...
-    Downloading from http://forge.puppetlabs.com ...
-    Installing -- do not interrupt ...
-    /etc/puppet/modules
-    └── pmtacceptance-apollo (\e[0;36mv0.0.1\e[0m)
-  OUTPUT
+module_name   = "apollo"
+on master, puppet("module install #{module_author}-#{module_name}") do
+  assert_module_installed_ui(stdout, module_author, module_name)
 end
 
-on master, puppet('module list') do
-  assert_output <<-OUTPUT
-    /etc/puppet/modules
-    ├── pmtacceptance-apollo (\e[0;36mv0.0.1\e[0m)
-    ├── pmtacceptance-java (\e[0;36mv1.7.0\e[0m)
-    └── pmtacceptance-stdlib (\e[0;36mv1.0.0\e[0m)
-    /usr/share/puppet/modules (no modules installed)
-  OUTPUT
-end
-
-ensure step "Teardown"
-apply_manifest_on master, "host { 'forge.puppetlabs.com': ensure => absent }"
-apply_manifest_on master, "file { ['/etc/puppet/modules', '/usr/share/puppet/modules']: ensure => directory, recurse => true, purge => true, force => true }"
+on master, puppet("module list --modulepath #{default_moduledir}") do
+  module_name   = "java"
+  assert_module_installed_ui(stdout, module_author, module_name, module_version, '==')
 end

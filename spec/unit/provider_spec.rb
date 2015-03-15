@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 def existing_command
@@ -54,7 +54,7 @@ describe Puppet::Provider do
         has_command(:does_not_exist, "/does/not/exist")
       end
 
-      provider.should_not be_suitable
+      expect(provider).not_to be_suitable
     end
 
     it "is required by default" do
@@ -64,7 +64,7 @@ describe Puppet::Provider do
 
       file_exists_and_is_executable(File.expand_path("/exists/somewhere"))
 
-      provider.should be_suitable
+      expect(provider).to be_suitable
     end
 
     it "can be specified as optional" do
@@ -74,7 +74,7 @@ describe Puppet::Provider do
         end
       end
 
-      provider.should be_suitable
+      expect(provider).to be_suitable
     end
   end
 
@@ -101,7 +101,7 @@ describe Puppet::Provider do
 
       file_exists_and_is_executable(File.expand_path("/this/command/exists"))
 
-      provider.should be_suitable
+      expect(provider).to be_suitable
     end
 
     it "does not allow the provider to be suitable if the executable is not present" do
@@ -109,7 +109,7 @@ describe Puppet::Provider do
         commands :does_not_exist => "/this/command/does/not/exist"
       end
 
-      provider.should_not be_suitable
+      expect(provider).not_to be_suitable
     end
   end
 
@@ -134,39 +134,13 @@ describe Puppet::Provider do
         optional_commands :does_not_exist => "/this/command/does/not/exist"
       end
 
-      provider.should be_suitable
+      expect(provider).to be_suitable
     end
-  end
-
-  it "makes command methods on demand (deprecated)" do
-    Puppet::Util.expects(:which).with("/not/a/command").returns("/not/a/command")
-    Puppet::Util::Execution.expects(:execute).with(["/not/a/command"], {})
-
-    provider = provider_of do
-      @commands[:echo] = "/not/a/command"
-    end
-    provider.stubs(:which).with("/not/a/command").returns("/not/a/command")
-
-    provider.make_command_methods(:echo)
-    provider.echo
   end
 
   it "should have a specifity class method" do
-    Puppet::Provider.should respond_to(:specificity)
+    expect(Puppet::Provider).to respond_to(:specificity)
   end
-
-  it "should consider two defaults to be higher specificity than one default" do
-    one = provider_of do
-      defaultfor :operatingsystem => "solaris"
-    end
-
-    two = provider_of do
-      defaultfor :operatingsystem => "solaris", :operatingsystemrelease => "5.10"
-    end
-
-    two.specificity.should > one.specificity
-  end
-
 
   it "should be Comparable" do
     res = Puppet::Type.type(:notify).new(:name => "res")
@@ -184,20 +158,20 @@ describe Puppet::Provider do
     c.class.stubs(:name).returns "Puppet::Provider::Notify::C"
 
     [[a, b, c], [a, c, b], [b, a, c], [b, c, a], [c, a, b], [c, b, a]].each do |this|
-      this.sort.should == [a, b, c]
+      expect(this.sort).to eq([a, b, c])
     end
 
-    a.should be < b
-    a.should be < c
-    b.should be > a
-    b.should be < c
-    c.should be > a
-    c.should be > b
+    expect(a).to be < b
+    expect(a).to be < c
+    expect(b).to be > a
+    expect(b).to be < c
+    expect(c).to be > a
+    expect(c).to be > b
 
-    [a, b, c].each {|x| a.should be <= x }
-    [a, b, c].each {|x| c.should be >= x }
+    [a, b, c].each {|x| expect(a).to be <= x }
+    [a, b, c].each {|x| expect(c).to be >= x }
 
-    b.should be_between(a, c)
+    expect(b).to be_between(a, c)
   end
 
   context "when creating instances" do
@@ -206,11 +180,11 @@ describe Puppet::Provider do
       subject { provider.new(resource) }
 
       it "should set the resource correctly" do
-        subject.resource.must equal resource
+        expect(subject.resource).to equal resource
       end
 
       it "should set the name from the resource" do
-        subject.name.should == resource.name
+        expect(subject.name).to eq(resource.name)
       end
     end
 
@@ -218,10 +192,10 @@ describe Puppet::Provider do
       subject { provider.new(:name => "fred") }
 
       it "should set the name" do
-        subject.name.should == "fred"
+        expect(subject.name).to eq("fred")
       end
 
-      it "should not have a resource" do subject.resource.should be_nil end
+      it "should not have a resource" do expect(subject.resource).to be_nil end
     end
 
     context "with no arguments" do
@@ -231,17 +205,17 @@ describe Puppet::Provider do
         expect { subject.name }.to raise_error Puppet::DevError
       end
 
-      it "should not have a resource" do subject.resource.should be_nil end
+      it "should not have a resource" do expect(subject.resource).to be_nil end
     end
   end
 
   context "when confining" do
     it "should be suitable by default" do
-      subject.should be_suitable
+      expect(subject).to be_suitable
     end
 
     it "should not be default by default" do
-      subject.should_not be_default
+      expect(subject).not_to be_default
     end
 
     { { :true => true } => true,
@@ -266,25 +240,29 @@ describe Puppet::Provider do
     }.each do |confines, result|
       it "should confine #{confines.inspect} to #{result}" do
         confines.each {|test, value| subject.confine test => value }
-        subject.send(result ? :should : :should_not, be_suitable)
+        if result
+          expect(subject).to be_suitable
+        else
+          expect(subject).to_not be_suitable
+        end
       end
     end
 
     it "should not override a confine even if a second has the same type" do
       subject.confine :true => false
-      subject.should_not be_suitable
+      expect(subject).not_to be_suitable
 
       subject.confine :true => true
-      subject.should_not be_suitable
+      expect(subject).not_to be_suitable
     end
 
     it "should not be suitable if any confine fails" do
       subject.confine :true => false
-      subject.should_not be_suitable
+      expect(subject).not_to be_suitable
 
       10.times do
         subject.confine :true => true
-        subject.should_not be_suitable
+        expect(subject).not_to be_suitable
       end
     end
 
@@ -293,53 +271,126 @@ describe Puppet::Provider do
   context "default providers" do
     let :os do Facter.value(:operatingsystem) end
 
-    it { should respond_to :specificity }
+    it { is_expected.to respond_to :specificity }
 
     it "should find the default provider" do
       type.provide(:nondefault) {}
       subject.defaultfor :operatingsystem => os
-      subject.name.should == type.defaultprovider.name
+      expect(subject.name).to eq(type.defaultprovider.name)
+    end
+
+    describe "when there are multiple defaultfor's of equal specificity" do
+      before :each do
+        subject.defaultfor :operatingsystem => :os1
+        subject.defaultfor :operatingsystem => :os2
+      end
+
+      let(:alternate) { type.provide(:alternate) {} }
+
+      it "should be default for the first defaultfor" do
+        Facter.expects(:value).with(:operatingsystem).at_least_once.returns :os1
+
+        expect(provider).to be_default
+        expect(alternate).not_to be_default
+      end
+
+      it "should be default for the last defaultfor" do
+        Facter.expects(:value).with(:operatingsystem).at_least_once.returns :os2
+
+        expect(provider).to be_default
+        expect(alternate).not_to be_default
+      end
+    end
+
+    describe "when there are multiple defaultfor's with different specificity" do
+      before :each do
+        subject.defaultfor :operatingsystem => :os1
+        subject.defaultfor :operatingsystem => :os2, :operatingsystemmajrelease => "42"
+      end
+
+      let(:alternate) { type.provide(:alternate) {} }
+
+      it "should be default for a more specific, but matching, defaultfor" do
+        Facter.expects(:value).with(:operatingsystem).at_least_once.returns :os2
+        Facter.expects(:value).with(:operatingsystemmajrelease).at_least_once.returns "42"
+
+        expect(provider).to be_default
+        expect(alternate).not_to be_default
+      end
+
+      it "should be default for a less specific, but matching, defaultfor" do
+        Facter.expects(:value).with(:operatingsystem).at_least_once.returns :os1
+
+        expect(provider).to be_default
+        expect(alternate).not_to be_default
+      end
     end
 
     it "should consider any true value enough to be default" do
       alternate = type.provide(:alternate) {}
 
       subject.defaultfor :operatingsystem => [:one, :two, :three, os]
-      subject.name.should == type.defaultprovider.name
+      expect(subject.name).to eq(type.defaultprovider.name)
 
-      subject.should be_default
-      alternate.should_not be_default
+      expect(subject).to be_default
+      expect(alternate).not_to be_default
     end
 
-    it "should not be default if the confine doesn't match" do
-      subject.should_not be_default
+    it "should not be default if the defaultfor doesn't match" do
+      expect(subject).not_to be_default
       subject.defaultfor :operatingsystem => :one
-      subject.should_not be_default
+      expect(subject).not_to be_default
     end
 
     it "should consider two defaults to be higher specificity than one default" do
+      Facter.expects(:value).with(:osfamily).at_least_once.returns "solaris"
+      Facter.expects(:value).with(:operatingsystemrelease).at_least_once.returns "5.10"
+
       one = type.provide(:one) do
-        defaultfor :operatingsystem => "solaris"
+        defaultfor :osfamily => "solaris"
       end
 
       two = type.provide(:two) do
-        defaultfor :operatingsystem => "solaris", :operatingsystemrelease => "5.10"
+        defaultfor :osfamily => "solaris", :operatingsystemrelease => "5.10"
       end
 
-      two.specificity.should > one.specificity
+      expect(two.specificity).to be > one.specificity
     end
 
     it "should consider a subclass more specific than its parent class" do
       parent = type.provide(:parent)
       child  = type.provide(:child, :parent => parent)
 
-      child.specificity.should > parent.specificity
+      expect(child.specificity).to be > parent.specificity
+    end
+
+    describe "using a :feature key" do
+      before :each do
+        Puppet.features.add(:yay) do true end
+        Puppet.features.add(:boo) do false end
+      end
+
+      it "is default for an available feature" do
+        one = type.provide(:one) do
+          defaultfor :feature => :yay
+        end
+
+        expect(one).to be_default
+      end
+
+      it "is not default for a missing feature" do
+        two = type.provide(:two) do
+          defaultfor :feature => :boo
+        end
+
+        expect(two).not_to be_default
+      end
     end
   end
 
   context "provider commands" do
     it "should raise for unknown commands" do
-      expect { subject.command(:something) }.to raise_error Puppet::DevError
+      expect { subject.command(:something) }.to raise_error(Puppet::DevError)
     end
 
     it "should handle command inheritance" do
@@ -349,19 +400,19 @@ describe Puppet::Provider do
       command = Puppet::Util.which('sh') || Puppet::Util.which('cmd.exe')
       parent.commands :sh => command
 
-      FileTest.should be_exists parent.command(:sh)
-      parent.command(:sh).should =~ /#{Regexp.escape(command)}$/
+      expect(Puppet::FileSystem.exist?(parent.command(:sh))).to be_truthy
+      expect(parent.command(:sh)).to match(/#{Regexp.escape(command)}$/)
 
-      FileTest.should be_exists child.command(:sh)
-      child.command(:sh).should =~ /#{Regexp.escape(command)}$/
+      expect(Puppet::FileSystem.exist?(child.command(:sh))).to be_truthy
+      expect(child.command(:sh)).to match(/#{Regexp.escape(command)}$/)
     end
 
     it "#1197: should find commands added in the same run" do
       subject.commands :testing => "puppet-bug-1197"
-      subject.command(:testing).should be_nil
+      expect(subject.command(:testing)).to be_nil
 
       subject.stubs(:which).with("puppet-bug-1197").returns("/puppet-bug-1197")
-      subject.command(:testing).should == "/puppet-bug-1197"
+      expect(subject.command(:testing)).to eq("/puppet-bug-1197")
 
       # Ideally, we would also test that `suitable?` returned the right thing
       # here, but it is impossible to get access to the methods that do that
@@ -373,23 +424,23 @@ describe Puppet::Provider do
         subject.optional_commands :cmd => "/no/such/binary/exists"
       end
 
-      it { should be_suitable }
+      it { is_expected.to be_suitable }
 
       it "should not be suitable if a mandatory command is also missing" do
         subject.commands :foo => "/no/such/binary/either"
-        subject.should_not be_suitable
+        expect(subject).not_to be_suitable
       end
 
       it "should define a wrapper for the command" do
-        subject.should respond_to :cmd
+        expect(subject).to respond_to(:cmd)
       end
 
       it "should return nil if the command is requested" do
-        subject.command(:cmd).should be_nil
+        expect(subject.command(:cmd)).to be_nil
       end
 
       it "should raise if the command is invoked" do
-        expect { subject.cmd }.to raise_error Puppet::Error, /Command cmd is missing/
+        expect { subject.cmd }.to raise_error(Puppet::Error, /Command cmd is missing/)
       end
     end
   end
@@ -440,71 +491,58 @@ describe Puppet::Provider do
 
   context "mk_resource_methods" do
     before :each do
-      type.newproperty(:prop1)
-      type.newproperty(:prop2)
-      type.newparam(:param1)
-      type.newparam(:param2)
+      type.newproperty(:prop)
+      type.newparam(:param)
+      provider.mk_resource_methods
     end
 
-    fields = %w{prop1 prop2 param1 param2}
+    let(:instance) { provider.new(nil) }
 
-    # This is needed for Ruby 1.8.5, which throws an exception that the
-    # default rescue doesn't catch if the method isn't present.  Also, it has
-    # no convenient predicate for them, which equally hurts.
-    def has_method?(object, name)
-      begin
-        return true if object.instance_method(name)
-      rescue Exception
-        return false
-      end
+    it "defaults to :absent" do
+      expect(instance.prop).to eq(:absent)
+      expect(instance.param).to eq(:absent)
     end
 
-    fields.each do |name|
-      it "should add getter methods for #{name}" do
-        expect { subject.mk_resource_methods }.
-          to change { has_method?(subject, name) }.
-          from(false).to(true)
-      end
+    it "should update when set" do
+      instance.prop = 'hello'
+      instance.param = 'goodbye'
 
-      it "should add setter methods for #{name}" do
-        method = name + '='
-        expect { subject.mk_resource_methods }.
-          to change { has_method?(subject, name) }.
-          from(false).to(true)
-      end
+      expect(instance.prop).to eq('hello')
+      expect(instance.param).to eq('goodbye')
     end
 
-    context "with an instance" do
-      subject { provider.mk_resource_methods; provider.new(nil) }
+    it "treats nil the same as absent" do
+      instance.prop = "value"
+      instance.param = "value"
 
-      fields.each do |name|
-        context name do
-          it "should default to :absent" do
-            subject.send(name).should == :absent
-          end
+      instance.prop = nil
+      instance.param = nil
 
-          it "should update when set" do
-            expect { subject.send(name + '=', "hello") }.
-              to change { subject.send(name) }.
-              from(:absent).to("hello")
-          end
-        end
-      end
+      expect(instance.prop).to eq(:absent)
+      expect(instance.param).to eq(:absent)
+    end
+
+    it "preserves false as false" do
+      instance.prop = false
+      instance.param = false
+
+      expect(instance.prop).to eq(false)
+      expect(instance.param).to eq(false)
     end
   end
 
   context "source" do
     it "should default to the provider name" do
-      subject.source.should == :default
+      expect(subject.source).to eq(:default)
     end
 
     it "should default to the provider name for a child provider" do
-      type.provide(:sub, :parent => subject.name).source.should == :sub
+      expect(type.provide(:sub, :parent => subject.name).source).to eq(:sub)
     end
 
     it "should override if requested" do
       provider = type.provide(:sub, :parent => subject.name, :source => subject.source)
-      provider.source.should == subject.source
+      expect(provider.source).to eq(subject.source)
     end
 
     it "should override to anything you want" do
@@ -551,37 +589,54 @@ describe Puppet::Provider do
           type.provider(name)
         end
 
-        let :numeric? do setup[:numeric] ? :should : :should_not end
-        let :alpha?   do setup[:alpha]   ? :should : :should_not end
-
-        subject { provider }
-
-        it { should respond_to :has_features }
-        it { should respond_to :has_feature }
-
         context "provider class" do
-          it { should respond_to :nomethods? }
-          it { should_not be_nomethods }
+          subject { provider }
 
-          it { should respond_to :numeric? }
-          it { subject.send(numeric?, be_numeric) }
-          it { subject.send(numeric?, be_satisfies(:numeric)) }
+          it { is_expected.to respond_to(:has_features) }
+          it { is_expected.to respond_to(:has_feature) }
 
-          it { should respond_to :alpha? }
-          it { subject.send(alpha?, be_alpha) }
-          it { subject.send(alpha?, be_satisfies(:alpha)) }
+          it { is_expected.to respond_to(:nomethods?) }
+          it { is_expected.not_to be_nomethods }
+
+          it { is_expected.to respond_to(:numeric?) }
+          if setup[:numeric]
+            it { is_expected.to be_numeric }
+            it { is_expected.to be_satisfies(:numeric) }
+          else
+            it { is_expected.not_to be_numeric }
+            it { is_expected.not_to be_satisfies(:numeric) }
+          end
+
+          it { is_expected.to respond_to(:alpha?) }
+          if setup[:alpha]
+            it { is_expected.to be_alpha }
+            it { is_expected.to be_satisfies(:alpha) }
+          else
+            it { is_expected.not_to be_alpha }
+            it { is_expected.not_to be_satisfies(:alpha) }
+          end
         end
 
         context "provider instance" do
           subject { provider.new }
 
-          it { should respond_to :numeric? }
-          it { subject.send(numeric?, be_numeric) }
-          it { subject.send(numeric?, be_satisfies(:numeric)) }
+          it { is_expected.to respond_to(:numeric?) }
+          if setup[:numeric]
+            it { is_expected.to be_numeric }
+            it { is_expected.to be_satisfies(:numeric) }
+          else
+            it { is_expected.not_to be_numeric }
+            it { is_expected.not_to be_satisfies(:numeric) }
+          end
 
-          it { should respond_to :alpha? }
-          it { subject.send(alpha?, be_alpha) }
-          it { subject.send(alpha?, be_satisfies(:alpha)) }
+          it { is_expected.to respond_to(:alpha?) }
+          if setup[:alpha]
+            it { is_expected.to be_alpha }
+            it { is_expected.to be_satisfies(:alpha) }
+          else
+            it { is_expected.not_to be_alpha }
+            it { is_expected.not_to be_satisfies(:alpha) }
+          end
         end
       end
     end
@@ -591,11 +646,11 @@ describe Puppet::Provider do
         type.feature :undemanding, ''
       end
 
-      it { should respond_to :undemanding? }
+      it { is_expected.to respond_to(:undemanding?) }
 
       context "when the feature is not declared" do
-        it { should_not be_undemanding }
-        it { should_not be_satisfies :undemanding }
+        it { is_expected.not_to be_undemanding }
+        it { is_expected.not_to be_satisfies(:undemanding) }
       end
 
       context "when the feature is declared" do
@@ -603,8 +658,8 @@ describe Puppet::Provider do
           subject.has_feature :undemanding
         end
 
-        it { should be_undemanding }
-        it { should be_satisfies :undemanding }
+        it { is_expected.to be_undemanding }
+        it { is_expected.to be_satisfies(:undemanding) }
       end
     end
 
@@ -629,13 +684,13 @@ describe Puppet::Provider do
       }.each do |name, data|
         data[:yes].each do |param|
           it "should support #{param} with provider #{name}" do
-            providers[name].should be_supports_parameter param
+            expect(providers[name]).to be_supports_parameter(param)
           end
         end
 
         data[:no].each do |param|
           it "should not support #{param} with provider #{name}" do
-            providers[name].should_not be_supports_parameter param
+            expect(providers[name]).not_to be_supports_parameter(param)
           end
         end
       end
@@ -657,7 +712,7 @@ describe Puppet::Provider do
   end
 
   def allow_creation_of(command, environment = {})
-      Puppet::Provider::Command.stubs(:new).with(command.name, command.executable, Puppet::Util, Puppet::Util::Execution, { :custom_environment => environment }).returns(command)
+      Puppet::Provider::Command.stubs(:new).with(command.name, command.executable, Puppet::Util, Puppet::Util::Execution, { :failonfail => true, :combine => true, :custom_environment => environment }).returns(command)
   end
 
   def file_exists_and_is_executable(path)

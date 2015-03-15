@@ -1,14 +1,14 @@
 require 'net/http'
 require 'uri'
 
+require 'puppet/network/http'
 require 'puppet/network/http_pool'
-require 'puppet/network/http/api/v1'
-require 'puppet/network/http/compression'
 
 # Access objects via REST
 class Puppet::Indirector::REST < Puppet::Indirector::Terminus
-  include Puppet::Network::HTTP::API::V1
   include Puppet::Network::HTTP::Compression.module
+
+  IndirectedRoutes = Puppet::Network::HTTP::API::IndirectedRoutes
 
   class << self
     attr_reader :server_setting, :port_setting
@@ -41,140 +41,142 @@ class Puppet::Indirector::REST < Puppet::Indirector::Terminus
     Puppet.settings[port_setting || :masterport].to_i
   end
 
-  # Figure out the content type, turn that into a format, and use the format
-  # to extract the body of the response.
-  def deserialize(response, multiple = false)
-    case response.code
-    when "404"
-      return nil
-    when /^2/
-      raise "No content type in http response; cannot parse" unless response['content-type']
-
-      content_type = response['content-type'].gsub(/\s*;.*$/,'') # strip any appended charset
-
-      body = uncompress_body(response)
-
-      # Convert the response to a deserialized object.
-      if multiple
-        model.convert_from_multiple(content_type, body)
-      else
-        model.convert_from(content_type, body)
-      end
-    else
-      # Raise the http error if we didn't get a 'success' of some kind.
-      raise convert_to_http_error(response)
-    end
-  end
-
-  def convert_to_http_error(response)
-    message = "Error #{response.code} on SERVER: #{(response.body||'').empty? ? response.message : uncompress_body(response)}"
-    Net::HTTPError.new(message, response)
-  end
-
   # Provide appropriate headers.
   def headers
-    add_accept_encoding({"Accept" => model.supported_formats.join(", ")})
+    common_headers = {
+      "Accept"                                     => model.supported_formats.join(", "),
+      Puppet::Network::HTTP::HEADER_PUPPET_VERSION => Puppet.version
+    }
+
+    add_accept_encoding(common_headers)
+  end
+
+  def add_profiling_header(headers)
+    if (Puppet[:profile])
+      headers[Puppet::Network::HTTP::HEADER_ENABLE_PROFILING] = "true"
+    end
+    headers
   end
 
   def network(request)
-    Puppet::Network::HttpPool.http_instance(request.server || self.class.server, request.port || self.class.port)
+    Puppet::Network::HttpPool.http_instance(request.server || self.class.server,
+                                            request.port || self.class.port)
   end
 
-  [:get, :post, :head, :delete, :put].each do |method|
-    define_method "http_#{method}" do |request, *args|
-      http_request(method, request, *args)
-    end
+  def http_get(request, path, headers = nil, *args)
+    http_request(:get, request, path, add_profiling_header(headers), *args)
+  end
+
+  def http_post(request, path, data, headers = nil, *args)
+    http_request(:post, request, path, data, add_profiling_header(headers), *args)
+  end
+
+  def http_head(request, path, headers = nil, *args)
+    http_request(:head, request, path, add_profiling_header(headers), *args)
+  end
+
+  def http_delete(request, path, headers = nil, *args)
+    http_request(:delete, request, path, add_profiling_header(headers), *args)
+  end
+
+  def http_put(request, path, data, headers = nil, *args)
+    http_request(:put, request, path, data, add_profiling_header(headers), *args)
   end
 
   def http_request(method, request, *args)
-    http_connection = network(request)
-    peer_certs = []
-
-    # We add the callback to collect the certificates for use in constructing
-    # the error message if the verification failed.  This is necessary since we
-    # don't have direct access to the cert that we expected the connection to
-    # use otherwise.
-    #
-    http_connection.verify_callback = proc do |preverify_ok, ssl_context|
-      peer_certs << Puppet::SSL::Certificate.from_s(ssl_context.current_cert.to_pem)
-      preverify_ok
-    end
-
-    http_connection.send(method, *args)
-  rescue OpenSSL::SSL::SSLError => error
-    if error.message.include? "certificate verify failed"
-      raise Puppet::Error, "#{error.message}.  This is often because the time is out of sync on the server or client"
-    elsif error.message =~ /hostname (was )?not match/
-      raise unless cert = peer_certs.find { |c| c.name !~ /^puppet ca/i }
-
-      valid_certnames = [cert.name, *cert.subject_alt_names].uniq
-      msg = valid_certnames.length > 1 ? "one of #{valid_certnames.join(', ')}" : valid_certnames.first
-
-      raise Puppet::Error, "Server hostname '#{http_connection.address}' did not match server certificate; expected #{msg}"
-    else
-      raise
-    end
+    conn = network(request)
+    conn.send(method, *args)
   end
 
   def find(request)
-    uri, body = request_to_uri_and_body(request)
+    uri, body = IndirectedRoutes.request_to_uri_and_body(request)
     uri_with_query_string = "#{uri}?#{body}"
 
-    response = do_request(request) do |request|
+    response = do_request(request) do |req|
       # WEBrick in Ruby 1.9.1 only supports up to 1024 character lines in an HTTP request
       # http://redmine.ruby-lang.org/issues/show/3991
       if "GET #{uri_with_query_string} HTTP/1.1\r\n".length > 1024
-        http_post(request, uri, body, headers)
+        http_post(req, uri, body, headers)
       else
-        http_get(request, uri_with_query_string, headers)
+        http_get(req, uri_with_query_string, headers)
       end
     end
-    result = deserialize(response)
 
-    return nil unless result
+    if is_http_200?(response)
+      content_type, body = parse_response(response)
+      result = deserialize_find(content_type, body)
+      result.name = request.key if result.respond_to?(:name=)
+      result
 
-    result.name = request.key if result.respond_to?(:name=)
-    result
+    elsif is_http_404?(response)
+      return nil unless request.options[:fail_on_404]
+
+      # 404 can get special treatment as the indirector API can not produce a meaningful
+      # reason to why something is not found - it may not be the thing the user is
+      # expecting to find that is missing, but something else (like the environment).
+      # While this way of handling the issue is not perfect, there is at least an error
+      # that makes a user aware of the reason for the failure.
+      #
+      content_type, body = parse_response(response)
+      msg = "Find #{elide(uri_with_query_string, 100)} resulted in 404 with the message: #{body}"
+      raise Puppet::Error, msg
+    else
+      nil
+    end
   end
 
   def head(request)
-    response = do_request(request) do |request|
-      http_head(request, indirection2uri(request), headers)
+    response = do_request(request) do |req|
+      http_head(req, IndirectedRoutes.request_to_uri(req), headers)
     end
 
-    case response.code
-    when "404"
-      return false
-    when /^2/
-      return true
+    if is_http_200?(response)
+      true
     else
-      # Raise the http error if we didn't get a 'success' of some kind.
-      raise convert_to_http_error(response)
+      false
     end
   end
 
   def search(request)
-    result = do_request(request) do |request|
-      deserialize(http_get(request, indirection2uri(request), headers), true)
+    response = do_request(request) do |req|
+      http_get(req, IndirectedRoutes.request_to_uri(req), headers)
     end
 
-    # result from the server can be nil, but we promise to return an array...
-    result || []
+    if is_http_200?(response)
+      content_type, body = parse_response(response)
+      deserialize_search(content_type, body) || []
+    else
+      []
+    end
   end
 
   def destroy(request)
     raise ArgumentError, "DELETE does not accept options" unless request.options.empty?
 
-    do_request(request) do |request|
-      return deserialize(http_delete(request, indirection2uri(request), headers))
+    response = do_request(request) do |req|
+      http_delete(req, IndirectedRoutes.request_to_uri(req), headers)
+    end
+
+    if is_http_200?(response)
+      content_type, body = parse_response(response)
+      deserialize_destroy(content_type, body)
+    else
+      nil
     end
   end
 
   def save(request)
     raise ArgumentError, "PUT does not accept options" unless request.options.empty?
 
-    do_request(request) do |request|
-      deserialize http_put(request, indirection2uri(request), request.instance.render, headers.merge({ "Content-Type" => request.instance.mime }))
+    response = do_request(request) do |req|
+      http_put(req, IndirectedRoutes.request_to_uri(req), req.instance.render, headers.merge({ "Content-Type" => req.instance.mime }))
+    end
+
+    if is_http_200?(response)
+      content_type, body = parse_response(response)
+      deserialize_save(content_type, body)
+    else
+      nil
     end
   end
 
@@ -185,12 +187,69 @@ class Puppet::Indirector::REST < Puppet::Indirector::Terminus
   # to request.do_request from here, thus if we change what we pass or how we
   # get it, we only need to change it here.
   def do_request(request)
-    request.do_request(self.class.srv_service, self.class.server, self.class.port) { |request| yield(request) }
+    request.do_request(self.class.srv_service, self.class.server, self.class.port) { |req| yield(req) }
+  end
+
+  def validate_key(request)
+    # Validation happens on the remote end
   end
 
   private
 
-  def environment
-    Puppet::Node::Environment.new
+  def is_http_200?(response)
+    case response.code
+    when "404"
+      false
+    when /^2/
+      true
+    else
+      # Raise the http error if we didn't get a 'success' of some kind.
+      raise convert_to_http_error(response)
+    end
+  end
+
+  def is_http_404?(response)
+    response.code == "404"
+  end
+
+  def convert_to_http_error(response)
+    message = "Error #{response.code} on SERVER: #{(response.body||'').empty? ? response.message : uncompress_body(response)}"
+    Net::HTTPError.new(message, response)
+  end
+
+  # Returns the content_type, stripping any appended charset, and the
+  # body, decompressed if necessary (content-encoding is checked inside
+  # uncompress_body)
+  def parse_response(response)
+    if response['content-type']
+      [ response['content-type'].gsub(/\s*;.*$/,''),
+        body = uncompress_body(response) ]
+    else
+      raise "No content type in http response; cannot parse"
+    end
+  end
+
+  def deserialize_find(content_type, body)
+    model.convert_from(content_type, body)
+  end
+
+  def deserialize_search(content_type, body)
+    model.convert_from_multiple(content_type, body)
+  end
+
+  def deserialize_destroy(content_type, body)
+    model.convert_from(content_type, body)
+  end
+
+  def deserialize_save(content_type, body)
+    nil
+  end
+
+  def elide(string, length)
+    if Puppet::Util::Log.level == :debug || string.length <= length
+      string
+    else
+      string[0, length - 3] + "..."
+    end
   end
 end

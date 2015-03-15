@@ -1,91 +1,69 @@
-begin test_name "puppet module upgrade (to installed version)"
+test_name "puppet module upgrade (to installed version)"
+require 'puppet/acceptance/module_utils'
+extend Puppet::Acceptance::ModuleUtils
+
+hosts.each do |host|
+  skip_test "skip tests requiring forge certs on solaris and aix" if host['platform'] =~ /solaris/
+end
+
+orig_installed_modules = get_installed_modules_for_hosts hosts
+teardown do
+  rm_installed_modules_from_hosts orig_installed_modules, (get_installed_modules_for_hosts hosts)
+end
 
 step 'Setup'
-require 'resolv'; ip = Resolv.getaddress('forge-dev.puppetlabs.lan')
-apply_manifest_on master, "host { 'forge.puppetlabs.com': ip => '#{ip}' }"
-apply_manifest_on master, <<-'MANIFEST1'
-file { '/usr/share/puppet':
-  ensure  => directory,
-}
-file { ['/etc/puppet/modules', '/usr/share/puppet/modules']:
-  ensure  => directory,
-  recurse => true,
-  purge   => true,
-  force   => true,
-}
-MANIFEST1
+
+stub_forge_on(master)
+
+default_moduledir = get_default_modulepath_for_host(master)
+
 on master, puppet("module install pmtacceptance-java --version 1.6.0")
-on master, puppet("module list") do
-  assert_output <<-OUTPUT
-    /etc/puppet/modules
-    ├── pmtacceptance-java (\e[0;36mv1.6.0\e[0m)
-    └── pmtacceptance-stdlib (\e[0;36mv1.0.0\e[0m)
-    /usr/share/puppet/modules (no modules installed)
+on master, puppet("module list --modulepath #{default_moduledir}") do
+  assert_equal <<-OUTPUT, stdout
+#{default_moduledir}
+├── pmtacceptance-java (\e[0;36mv1.6.0\e[0m)
+└── pmtacceptance-stdlub (\e[0;36mv1.0.0\e[0m)
   OUTPUT
 end
 
 step "Try to upgrade a module to the current version"
 on master, puppet("module upgrade pmtacceptance-java --version 1.6.x"), :acceptable_exit_codes => [0] do
-  assert_output <<-OUTPUT
-    STDOUT> Preparing to upgrade 'pmtacceptance-java' ...
-    STDOUT> Found 'pmtacceptance-java' (\e[0;36mv1.6.0\e[0m) in /etc/puppet/modules ...
-    STDOUT> Downloading from http://forge.puppetlabs.com ...
-    STDERR> \e[1;31mError: Could not upgrade module 'pmtacceptance-java' (v1.6.0 -> v1.6.x)
-    STDERR>   The installed version is already the best fit for the current dependencies
-    STDERR>     You specified 'pmtacceptance-java' (v1.6.x)
-    STDERR>     Use `puppet module install --force` to re-install this module\e[0m
-  OUTPUT
+  assert_match(/The installed version is already the latest version matching/, stdout,
+    "Error that specified version was already satisfied was not displayed")
 end
 
 step "Upgrade a module to the current version with --force"
 on master, puppet("module upgrade pmtacceptance-java --version 1.6.x --force") do
-  assert_output <<-OUTPUT
-    Preparing to upgrade 'pmtacceptance-java' ...
-    Found 'pmtacceptance-java' (\e[0;36mv1.6.0\e[0m) in /etc/puppet/modules ...
-    Downloading from http://forge.puppetlabs.com ...
-    Upgrading -- do not interrupt ...
-    /etc/puppet/modules
-    └── pmtacceptance-java (\e[0;36mv1.6.0 -> v1.6.0\e[0m)
-  OUTPUT
+  assert_match(/#{default_moduledir}/, stdout,
+    'Error that distmoduledir was not displayed')
+
+  assert_match(/\'pmtacceptance-java\' \(.*v1\.6\.0.*\)/, stdout,
+    'Error that package name and version were not displayed')
 end
 
 step "Upgrade to the latest version"
 on master, puppet("module upgrade pmtacceptance-java") do
-  assert_output <<-OUTPUT
-    Preparing to upgrade 'pmtacceptance-java' ...
-    Found 'pmtacceptance-java' (\e[0;36mv1.6.0\e[0m) in /etc/puppet/modules ...
-    Downloading from http://forge.puppetlabs.com ...
-    Upgrading -- do not interrupt ...
-    /etc/puppet/modules
-    └── pmtacceptance-java (\e[0;36mv1.6.0 -> v1.7.1\e[0m)
+  assert_equal <<-OUTPUT, stdout
+\e[mNotice: Preparing to upgrade 'pmtacceptance-java' ...\e[0m
+\e[mNotice: Found 'pmtacceptance-java' (\e[0;36mv1.6.0\e[m) in #{default_moduledir} ...\e[0m
+\e[mNotice: Downloading from https://forgeapi.puppetlabs.com ...\e[0m
+\e[mNotice: Upgrading -- do not interrupt ...\e[0m
+#{default_moduledir}
+└── pmtacceptance-java (\e[0;36mv1.6.0 -> v1.7.1\e[0m)
   OUTPUT
 end
 
 step "Try to upgrade a module to the latest version with the latest version installed"
 on master, puppet("module upgrade pmtacceptance-java"), :acceptable_exit_codes => [0] do
-  assert_output <<-OUTPUT
-    STDOUT> Preparing to upgrade 'pmtacceptance-java' ...
-    STDOUT> Found 'pmtacceptance-java' (\e[0;36mv1.7.1\e[0m) in /etc/puppet/modules ...
-    STDOUT> Downloading from http://forge.puppetlabs.com ...
-    STDERR> \e[1;31mError: Could not upgrade module 'pmtacceptance-java' (v1.7.1 -> latest: v1.7.1)
-    STDERR>   The installed version is already the latest version
-    STDERR>     Use `puppet module install --force` to re-install this module\e[0m
-  OUTPUT
+  assert_match(/The installed version is already the latest version matching.*latest/, stdout,
+    "Error that latest version was already installed was not displayed")
 end
 
 step "Upgrade a module to the latest version with --force"
 on master, puppet("module upgrade pmtacceptance-java --force") do
-  assert_output <<-OUTPUT
-    Preparing to upgrade 'pmtacceptance-java' ...
-    Found 'pmtacceptance-java' (\e[0;36mv1.7.1\e[0m) in /etc/puppet/modules ...
-    Downloading from http://forge.puppetlabs.com ...
-    Upgrading -- do not interrupt ...
-    /etc/puppet/modules
-    └── pmtacceptance-java (\e[0;36mv1.7.1 -> v1.7.1\e[0m)
-  OUTPUT
-end
+  assert_match(/#{default_moduledir}/, stdout,
+    'Error that distmoduledir was not displayed')
 
-ensure step "Teardown"
-apply_manifest_on master, "host { 'forge.puppetlabs.com': ensure => absent }"
-apply_manifest_on master, "file { ['/etc/puppet/modules', '/usr/share/puppet/modules']: ensure => directory, recurse => true, purge => true, force => true }"
+  assert_match(/pmtacceptance-java \(.*v1\.7\.1.*\)/, stdout,
+    'Error that package name and version were not displayed')
 end

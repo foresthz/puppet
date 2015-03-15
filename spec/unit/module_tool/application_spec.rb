@@ -12,15 +12,13 @@ describe Puppet::ModuleTool::Applications::Application do
 
     good_versions.each do |ver|
       it "should accept version string #{ver}" do
-        pending("porting to Windows", :if => Puppet.features.microsoft_windows?) do
-          app.parse_filename("puppetlabs-ntp-#{ver}")
-        end
+        app.parse_filename("puppetlabs-ntp-#{ver}")
       end
     end
 
     bad_versions.each do |ver|
       it "should not accept version string #{ver}" do
-        expect { app.parse_filename("puppetlabs-ntp-#{ver}") }.should raise_error
+        expect { app.parse_filename("puppetlabs-ntp-#{ver}") }.to raise_error
       end
     end
   end

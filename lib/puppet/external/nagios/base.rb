@@ -215,7 +215,7 @@ class Nagios::Base
       # Now access the parameters directly, to make it at least less
       # likely we'll end up in an infinite recursion.
       if mname.to_s =~ /=$/
-        @parameters[pname] = *args
+        @parameters[pname] = args.first
       else
         return @parameters[mname]
       end
@@ -271,7 +271,6 @@ class Nagios::Base
   # okay, this sucks
   # how do i get my list of ocs?
   def to_ldif
-    base = self.class.ldapbase
     str = self.dn + "\n"
     ocs = Array.new
     if self.class.ocs
@@ -284,8 +283,8 @@ class Nagios::Base
     oc.sub!(/Nagios/,'nagios')
     oc.sub!(/::/,'')
     ocs.push oc
-    ocs.each { |oc|
-      str += "objectclass: #{oc}\n"
+    ocs.each { |objclass|
+      str += "objectclass: #{objclass}\n"
     }
     @parameters.each { |name,value|
       next if self.class.suppress.include?(name)
@@ -298,12 +297,13 @@ class Nagios::Base
   def to_s
     str = "define #{self.type} {\n"
 
-    self.each { |param,value|
+    @parameters.keys.sort.each { |param|
+      value = @parameters[param]
       str += %{\t%-30s %s\n} % [ param,
         if value.is_a? Array
-          value.join(",")
+          value.join(",").sub(';', '\;')
         else
-          value
+          value.to_s.sub(';', '\;')
         end
         ]
     }
@@ -410,7 +410,6 @@ class Nagios::Base
   end
 
   newtype :servicedependency do
-    auxiliary = true
     setparameters :dependent_host_name, :dependent_hostgroup_name,
       :dependent_service_description, :host_name, :hostgroup_name,
       :service_description, :inherits_parent, :execution_failure_criteria,
@@ -433,7 +432,6 @@ class Nagios::Base
   end
 
   newtype :hostdependency do
-    auxiliary = true
     setparameters :dependent_host_name, :dependent_hostgroup_name, :host_name,
       :hostgroup_name, :inherits_parent, :execution_failure_criteria,
       :notification_failure_criteria, :dependency_period,
@@ -454,7 +452,6 @@ class Nagios::Base
   end
 
   newtype :hostextinfo do
-    auxiliary = true
     setparameters :host_name, :notes, :notes_url, :icon_image, :icon_image_alt,
       :vrml_image, :statusmap_image, "2d_coords".intern, "3d_coords".intern,
       :register, :use
@@ -463,7 +460,6 @@ class Nagios::Base
   end
 
   newtype :serviceextinfo do
-    auxiliary = true
 
     setparameters :host_name, :service_description, :notes, :notes_url,
       :action_url, :icon_image, :icon_image_alt,

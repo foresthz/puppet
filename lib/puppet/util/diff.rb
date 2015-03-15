@@ -1,3 +1,5 @@
+require 'tempfile'
+
 # Provide a diff between two strings.
 module Puppet::Util::Diff
   include Puppet::Util::Execution
@@ -8,10 +10,12 @@ module Puppet::Util::Diff
 
     command = [diff_cmd]
     if args = Puppet[:diff_args] and args != ""
-      command << args
+      args.split(' ').each do|arg|
+        command << arg
+      end
     end
     command << old << new
-    Puppet::Util::Execution.execute(command, :failonfail => false)
+    Puppet::Util::Execution.execute(command, :failonfail => false, :combine => false)
   end
 
   module_function :diff
@@ -64,7 +68,6 @@ module Puppet::Util::Diff
   end
 
   def string_file_diff(path, string)
-    require 'tempfile'
     tempfile = Tempfile.new("puppet-diffing")
     tempfile.open
     tempfile.print string

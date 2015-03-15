@@ -6,7 +6,7 @@
 # drwxr-xr-x  root root system_u:object_r:root_t         /
 #
 # The context of '/' here is 'system_u:object_r:root_t'.  This is
-# three seperate fields:
+# three separate fields:
 #
 # system_u is the user context
 # object_r is the role context
@@ -18,6 +18,7 @@
 # values while leaving the others alone.
 #
 # See http://www.nsa.gov/selinux/ for complete docs on SELinux.
+
 
 module Puppet
   require 'puppet/util/selinux'
@@ -48,9 +49,13 @@ module Puppet
     def insync?(value)
       if not selinux_support?
         debug("SELinux bindings not found. Ignoring parameter.")
-        return true
+        true
+      elsif not selinux_label_support?(@resource[:path])
+        debug("SELinux not available for this filesystem. Ignoring parameter.")
+        true
+      else
+        super
       end
-      super
     end
 
     def sync

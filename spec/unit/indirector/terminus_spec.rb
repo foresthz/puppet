@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 require 'puppet/defaults'
 require 'puppet/indirector'
@@ -9,6 +9,10 @@ describe Puppet::Indirector::Terminus do
     class Puppet::AbstractConcept
       extend Puppet::Indirector
       indirects :abstract_concept
+      attr_accessor :name
+      def initialize(name = "name")
+        @name = name
+      end
     end
 
     class Puppet::AbstractConcept::Freedom < Puppet::Indirector::Code
@@ -23,74 +27,76 @@ describe Puppet::Indirector::Terminus do
   let :terminus_class do Puppet::AbstractConcept::Freedom end
   let :terminus       do terminus_class.new end
   let :indirection    do Puppet::AbstractConcept.indirection end
+  let :model          do Puppet::AbstractConcept end
 
   it "should provide a method for setting terminus class documentation" do
-    terminus_class.should respond_to(:desc)
+    expect(terminus_class).to respond_to(:desc)
   end
 
   it "should support a class-level name attribute" do
-    terminus_class.should respond_to(:name)
+    expect(terminus_class).to respond_to(:name)
   end
 
   it "should support a class-level indirection attribute" do
-    terminus_class.should respond_to(:indirection)
+    expect(terminus_class).to respond_to(:indirection)
   end
 
   it "should support a class-level terminus-type attribute" do
-    terminus_class.should respond_to(:terminus_type)
+    expect(terminus_class).to respond_to(:terminus_type)
   end
 
   it "should support a class-level model attribute" do
-    terminus_class.should respond_to(:model)
+    expect(terminus_class).to respond_to(:model)
   end
 
   it "should accept indirection instances as its indirection" do
     # The test is that this shouldn't raise, and should preserve the object
     # instance exactly, hence "equal", not just "==".
     terminus_class.indirection = indirection
-    terminus_class.indirection.should equal indirection
+    expect(terminus_class.indirection).to equal indirection
   end
 
   it "should look up indirection instances when only a name has been provided" do
     terminus_class.indirection = :abstract_concept
-    terminus_class.indirection.should equal indirection
+    expect(terminus_class.indirection).to equal indirection
   end
 
   it "should fail when provided a name that does not resolve to an indirection" do
-    expect { terminus_class.indirection = :exploding_whales }.
-      should raise_error(ArgumentError)
+    expect {
+      terminus_class.indirection = :exploding_whales
+    }.to raise_error(ArgumentError, /Could not find indirection instance/)
 
     # We should still have the default indirection.
-    terminus_class.indirection.should equal indirection
+    expect(terminus_class.indirection).to equal indirection
   end
 
   describe "when a terminus instance" do
     it "should return the class's name as its name" do
-      terminus.name.should == :freedom
+      expect(terminus.name).to eq(:freedom)
     end
 
     it "should return the class's indirection as its indirection" do
-      terminus.indirection.should equal indirection
+      expect(terminus.indirection).to equal indirection
     end
 
     it "should set the instances's type to the abstract terminus type's name" do
-      terminus.terminus_type.should == :code
+      expect(terminus.terminus_type).to eq(:code)
     end
 
     it "should set the instances's model to the indirection's model" do
-      terminus.model.should equal indirection.model
+      expect(terminus.model).to equal indirection.model
     end
   end
 
   describe "when managing terminus classes" do
     it "should provide a method for registering terminus classes" do
-      Puppet::Indirector::Terminus.should respond_to(:register_terminus_class)
+      expect(Puppet::Indirector::Terminus).to respond_to(:register_terminus_class)
     end
 
     it "should provide a method for returning terminus classes by name and type" do
       terminus = stub 'terminus_type', :name => :abstract, :indirection_name => :whatever
       Puppet::Indirector::Terminus.register_terminus_class(terminus)
-      Puppet::Indirector::Terminus.terminus_class(:whatever, :abstract).should equal(terminus)
+      expect(Puppet::Indirector::Terminus.terminus_class(:whatever, :abstract)).to equal(terminus)
     end
 
     it "should set up autoloading for any terminus class types requested" do
@@ -111,7 +117,7 @@ describe Puppet::Indirector::Terminus do
       expect {
         class Puppet::AbstractConcept::Physics < Puppet::Indirector::Code
         end
-      }.should raise_error(ArgumentError)
+      }.to raise_error(ArgumentError, /Could not find indirection instance/)
     end
 
     it "should register the terminus class with the terminus base class" do
@@ -141,8 +147,9 @@ describe Puppet::Indirector::Terminus do
     end
 
     it "should fail when anonymous classes are used" do
-      expect { Puppet::Indirector::Terminus.inherited(Class.new) }.
-        should raise_error(Puppet::DevError)
+      expect {
+        Puppet::Indirector::Terminus.inherited(Class.new)
+      }.to raise_error(Puppet::DevError, /Terminus subclasses must have associated constants/)
     end
 
     it "should use the last term in the constant for the terminus class name" do
@@ -196,22 +203,62 @@ describe Puppet::Indirector::Terminus do
     end
 
     it "should set the name of the abstract subclass to be its class constant" do
-      subclass.name.should == :test_terminus_type
+      expect(subclass.name).to eq(:test_terminus_type)
     end
 
     it "should mark abstract terminus types as such" do
-      subclass.should be_abstract_terminus
+      expect(subclass).to be_abstract_terminus
     end
 
     it "should not allow instances of abstract subclasses to be created" do
-      expect { subclass.new }.should raise_error(Puppet::DevError)
+      expect { subclass.new }.to raise_error(Puppet::DevError)
     end
   end
 
   describe "when listing terminus classes" do
     it "should list the terminus files available to load" do
       Puppet::Util::Autoload.any_instance.stubs(:files_to_load).returns ["/foo/bar/baz", "/max/runs/marathon"]
-      Puppet::Indirector::Terminus.terminus_classes('my_stuff').should == [:baz, :marathon]
+      expect(Puppet::Indirector::Terminus.terminus_classes('my_stuff')).to eq([:baz, :marathon])
+    end
+  end
+
+  describe "when validating a request" do
+    let :request do
+      Puppet::Indirector::Request.new(indirection.name, :find, "the_key", instance)
+    end
+
+    describe "`instance.name` does not match the key in the request" do
+      let(:instance) { model.new("wrong_key") }
+
+      it "raises an error " do
+        expect {
+          terminus.validate(request)
+        }.to raise_error(
+          Puppet::Indirector::ValidationError,
+          /Instance name .* does not match requested key/
+        )
+      end
+    end
+
+    describe "`instance` is not an instance of the model class" do
+      let(:instance) { mock "instance" }
+
+      it "raises an error" do
+        expect {
+          terminus.validate(request)
+        }.to raise_error(
+          Puppet::Indirector::ValidationError,
+          /Invalid instance type/
+        )
+      end
+    end
+
+    describe "the instance key and class match the request key and model class" do
+      let(:instance) { model.new("the_key") }
+
+      it "passes" do
+        terminus.validate(request)
+      end
     end
   end
 end

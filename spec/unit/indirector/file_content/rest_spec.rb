@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/indirector/file_content/rest'
@@ -9,6 +9,6 @@ describe Puppet::Indirector::FileContent::Rest do
   it "should set the content type to text/plain"
 
   it "should use the :fileserver SRV service" do
-    Puppet::Indirector::FileContent::Rest.srv_service.should == :fileserver
+    expect(Puppet::Indirector::FileContent::Rest.srv_service).to eq(:fileserver)
   end
 end

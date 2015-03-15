@@ -76,37 +76,10 @@ module Puppet::Util::Colors
     :reset       => { :console => "\e[m", :html => "" }
   }
 
-  # We define console_has_color? at load time since it's checking the
-  # underlying platform which will not change, and we don't want to perform
-  # the check every time we use logging
-  if Puppet::Util::Platform.windows?
-    # We're on windows, need win32console for color to work
-    begin
-      require 'win32console'
-    rescue LoadError
-      def console_has_color?
-        false
-      end
-    else
-      def console_has_color?
-        true
-      end
-    end
-  else
-    # On a posix system we can just enable it
-    def console_has_color?
-      true
-    end
-  end
-
   def colorize(color, str)
     case Puppet[:color]
     when true, :ansi, "ansi", "yes"
-      if console_has_color?
         console_color(color, str)
-      else
-        str
-      end
     when :html, "html"
       html_color(color, str)
     else

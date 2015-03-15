@@ -1,4 +1,3 @@
-require 'sync'
 require 'puppet/application'
 
 # A general class for triggering a run of another
@@ -10,14 +9,17 @@ class Puppet::Agent
   require 'puppet/agent/disabler'
   include Puppet::Agent::Disabler
 
-  attr_reader :client_class, :client, :splayed
-  attr_accessor :should_fork
+  attr_reader :client_class, :client, :splayed, :should_fork
 
-  # Just so we can specify that we are "the" instance.
-  def initialize(client_class)
+  def initialize(client_class, should_fork=true)
     @splayed = false
 
+    @should_fork = can_fork? && should_fork
     @client_class = client_class
+  end
+
+  def can_fork?
+    Puppet.features.posix? && RUBY_PLATFORM != 'java'
   end
 
   def needing_restart?
@@ -25,9 +27,9 @@ class Puppet::Agent
   end
 
   # Perform a run with our client.
-  def run(*args)
+  def run(client_options = {})
     if running?
-      Puppet.notice "Run of #{client_class} already in progress; skipping"
+      Puppet.notice "Run of #{client_class} already in progress; skipping  (#{lockfile_path} exists)"
       return
     end
     if disabled?
@@ -37,14 +39,13 @@ class Puppet::Agent
 
     result = nil
     block_run = Puppet::Application.controlled_run do
-      splay
+      splay client_options.fetch :splay, Puppet[:splay]
       result = run_in_fork(should_fork) do
         with_client do |client|
           begin
-            sync.synchronize { lock { client.run(*args) } }
-          rescue SystemExit,NoMemoryError
-            raise
-          rescue Exception => detail
+            client_args = client_options.merge(:pluginsync => Puppet[:pluginsync])
+            lock { client.run(client_args) }
+          rescue StandardError => detail
             Puppet.log_exception(detail, "Could not run #{client_class}: #{detail}")
           end
         end
@@ -65,18 +66,14 @@ class Puppet::Agent
   end
 
   # Sleep when splay is enabled; else just return.
-  def splay
-    return unless Puppet[:splay]
+  def splay(do_splay = Puppet[:splay])
+    return unless do_splay
     return if splayed?
 
-    time = rand(Integer(Puppet[:splaylimit]) + 1)
+    time = rand(Puppet[:splaylimit] + 1)
     Puppet.info "Sleeping for #{time} seconds (splay is enabled)"
     sleep(time)
     @splayed = true
-  end
-
-  def sync
-    @sync ||= Sync.new
   end
 
   def run_in_fork(forking = true)
@@ -109,9 +106,7 @@ class Puppet::Agent
   def with_client
     begin
       @client = client_class.new
-    rescue SystemExit,NoMemoryError
-      raise
-    rescue Exception => detail
+    rescue StandardError => detail
       Puppet.log_exception(detail, "Could not create instance of #{client_class}: #{detail}")
       return
     end

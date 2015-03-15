@@ -1,5 +1,6 @@
 require 'net/http'
 require 'semver'
+require 'json'
 require 'puppet/util/colors'
 
 module Puppet::ModuleTool
@@ -14,9 +15,6 @@ module Puppet::ModuleTool
       attr_accessor :options
 
       def initialize(options = {})
-        if Puppet.features.microsoft_windows?
-          raise Puppet::Error, "`puppet module` actions are currently not supported on Microsoft Windows"
-        end
         @options = options
       end
 
@@ -29,32 +27,43 @@ module Puppet::ModuleTool
         when Net::HTTPOK, Net::HTTPCreated
           Puppet.notice success
         else
-          errors = PSON.parse(response.body)['error'] rescue "HTTP #{response.code}, #{response.body}"
+          errors = JSON.parse(response.body)['error'] rescue "HTTP #{response.code}, #{response.body}"
           Puppet.warning "#{failure} (#{errors})"
         end
       end
 
-      def metadata(require_modulefile = false)
-        unless @metadata
-          unless @path
-            raise ArgumentError, "Could not determine module path"
-          end
-          @metadata = Puppet::ModuleTool::Metadata.new
-          contents = ContentsDescription.new(@path)
-          contents.annotate(@metadata)
-          checksums = Checksums.new(@path)
-          checksums.annotate(@metadata)
-          modulefile_path = File.join(@path, 'Modulefile')
-          if File.file?(modulefile_path)
-            Puppet::ModuleTool::ModulefileReader.evaluate(@metadata, modulefile_path)
-          elsif require_modulefile
-            raise ArgumentError, "No Modulefile found."
+      def metadata(require_metadata = false)
+        return @metadata if @metadata
+        @metadata = Puppet::ModuleTool::Metadata.new
+
+        unless @path
+          raise ArgumentError, "Could not determine module path"
+        end
+
+        if require_metadata && !Puppet::ModuleTool.is_module_root?(@path)
+          raise ArgumentError, "Unable to find metadata.json in module root at #{@path} See https://docs.puppetlabs.com/puppet/latest/reference/modules_publishing.html for required file format."
+        end
+
+        metadata_path   = File.join(@path, 'metadata.json')
+
+        if File.file?(metadata_path)
+          File.open(metadata_path) do |f|
+            begin
+              @metadata.update(JSON.load(f))
+            rescue JSON::ParserError => ex
+              raise ArgumentError, "Could not parse JSON #{metadata_path}", ex.backtrace
+            end
           end
         end
-        @metadata
+
+        if File.file?(File.join(@path, 'Modulefile'))
+          Puppet.warning "A Modulefile was found in the root directory of the module. This file will be ignored and can safely be removed."
+        end
+
+        return @metadata
       end
 
-      def load_modulefile!
+      def load_metadata!
         @metadata = nil
         metadata(true)
       end

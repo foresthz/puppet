@@ -1,42 +1,38 @@
-begin test_name "puppet module upgrade (in a secondary directory)"
+test_name "puppet module upgrade (in a secondary directory)"
+require 'puppet/acceptance/module_utils'
+extend Puppet::Acceptance::ModuleUtils
+
+hosts.each do |host|
+  skip_test "skip tests requiring forge certs on solaris and aix" if host['platform'] =~ /solaris/
+end
+
+orig_installed_modules = get_installed_modules_for_hosts hosts
+teardown do
+  rm_installed_modules_from_hosts orig_installed_modules, (get_installed_modules_for_hosts hosts)
+end
 
 step 'Setup'
-require 'resolv'; ip = Resolv.getaddress('forge-dev.puppetlabs.lan')
-apply_manifest_on master, "host { 'forge.puppetlabs.com': ip => '#{ip}' }"
-apply_manifest_on master, <<-'MANIFEST1'
-file { '/usr/share/puppet':
-  ensure  => directory,
-}
-file { ['/etc/puppet/modules', '/usr/share/puppet/modules']:
-  ensure  => directory,
-  recurse => true,
-  purge   => true,
-  force   => true,
-}
-MANIFEST1
-on master, puppet("module install pmtacceptance-java --version 1.6.0 --target-dir /usr/share/puppet/modules")
-on master, puppet("module list") do
-  assert_output <<-OUTPUT
-    /etc/puppet/modules (no modules installed)
-    /usr/share/puppet/modules
-    ├── pmtacceptance-java (\e[0;36mv1.6.0\e[0m)
-    └── pmtacceptance-stdlib (\e[0;36mv1.0.0\e[0m)
+
+stub_forge_on(master)
+
+on master, "mkdir -p #{master['distmoduledir']}"
+on master, puppet("module install pmtacceptance-java --version 1.6.0 --target-dir #{master['distmoduledir']}")
+on master, puppet("module list --modulepath #{master['distmoduledir']}") do
+  assert_equal <<-OUTPUT, stdout
+#{master['distmoduledir']}
+├── pmtacceptance-java (\e[0;36mv1.6.0\e[0m)
+└── pmtacceptance-stdlub (\e[0;36mv1.0.0\e[0m)
   OUTPUT
 end
 
 step "Upgrade a module that has a more recent version published"
 on master, puppet("module upgrade pmtacceptance-java") do
-  assert_output <<-OUTPUT
-    Preparing to upgrade 'pmtacceptance-java' ...
-    Found 'pmtacceptance-java' (\e[0;36mv1.6.0\e[0m) in /usr/share/puppet/modules ...
-    Downloading from http://forge.puppetlabs.com ...
-    Upgrading -- do not interrupt ...
-    /usr/share/puppet/modules
-    └── pmtacceptance-java (\e[0;36mv1.6.0 -> v1.7.1\e[0m)
+  assert_equal <<-OUTPUT, stdout
+\e[mNotice: Preparing to upgrade 'pmtacceptance-java' ...\e[0m
+\e[mNotice: Found 'pmtacceptance-java' (\e[0;36mv1.6.0\e[m) in #{master['distmoduledir']} ...\e[0m
+\e[mNotice: Downloading from https://forgeapi.puppetlabs.com ...\e[0m
+\e[mNotice: Upgrading -- do not interrupt ...\e[0m
+#{master['distmoduledir']}
+└── pmtacceptance-java (\e[0;36mv1.6.0 -> v1.7.1\e[0m)
   OUTPUT
-end
-
-ensure step "Teardown"
-apply_manifest_on master, "host { 'forge.puppetlabs.com': ensure => absent }"
-apply_manifest_on master, "file { ['/etc/puppet/modules', '/usr/share/puppet/modules']: ensure => directory, recurse => true, purge => true, force => true }"
 end

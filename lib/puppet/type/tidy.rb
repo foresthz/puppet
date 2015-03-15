@@ -1,3 +1,5 @@
+require 'puppet/parameter/boolean'
+
 Puppet::Type.newtype(:tidy) do
   require 'puppet/file_serving/fileset'
   require 'puppet/file_bucket/dipper'
@@ -18,6 +20,9 @@ Puppet::Type.newtype(:tidy) do
     desc "The path to the file or directory to manage.  Must be fully
       qualified."
     isnamevar
+    munge do |value|
+      File.expand_path(value)
+    end
   end
 
   newparam(:recurse) do
@@ -43,7 +48,7 @@ Puppet::Type.newtype(:tidy) do
   end
 
   newparam(:matches) do
-    desc <<-EOT
+    desc <<-'EOT'
       One or more (shell type) file glob patterns, which restrict
       the list of files to be tidied to those whose basenames match
       at least one of the patterns specified. Multiple patterns can
@@ -178,20 +183,18 @@ Puppet::Type.newtype(:tidy) do
   end
 
   newparam(:type) do
-    desc "Set the mechanism for determining age."
+    desc "Set the mechanism for determining age. Default: atime."
 
     newvalues(:atime, :mtime, :ctime)
 
     defaultto :atime
   end
 
-  newparam(:rmdirs, :boolean => true) do
+  newparam(:rmdirs, :boolean => true, :parent => Puppet::Parameter::Boolean) do
     desc "Tidy directories in addition to files; that is, remove
       directories whose age is older than the specified criteria.
       This will only remove empty directories, so all contained
       files must also be tidied before a directory gets removed."
-
-    newvalues :true, :false
   end
 
   # Erase PFile's validate method
@@ -260,7 +263,7 @@ Puppet::Type.newtype(:tidy) do
     # so that a directory is emptied before we try to remove it.
     files_by_name = result.inject({}) { |hash, file| hash[file[:path]] = file; hash }
 
-    files_by_name.keys.sort { |a,b| b <=> b }.each do |path|
+    files_by_name.keys.sort { |a,b| b <=> a }.each do |path|
       dir = ::File.dirname(path)
       next unless resource = files_by_name[dir]
       if resource[:require]
@@ -312,7 +315,7 @@ Puppet::Type.newtype(:tidy) do
 
   def stat(path)
     begin
-      ::File.lstat(path)
+      Puppet::FileSystem.lstat(path)
     rescue Errno::ENOENT => error
       info "File does not exist"
       return nil

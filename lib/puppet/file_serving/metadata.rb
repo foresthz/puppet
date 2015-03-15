@@ -3,7 +3,6 @@ require 'puppet/indirector'
 require 'puppet/file_serving'
 require 'puppet/file_serving/base'
 require 'puppet/util/checksums'
-require 'puppet/file_serving/indirection_hooks'
 
 # A class that handles retrieving file metadata.
 class Puppet::FileServing::Metadata < Puppet::FileServing::Base
@@ -11,14 +10,14 @@ class Puppet::FileServing::Metadata < Puppet::FileServing::Base
   include Puppet::Util::Checksums
 
   extend Puppet::Indirector
-  indirects :file_metadata, :extend => Puppet::FileServing::IndirectionHooks
+  indirects :file_metadata, :terminus_class => :selector
 
   attr_reader :path, :owner, :group, :mode, :checksum_type, :checksum, :ftype, :destination
 
   PARAM_ORDER = [:mode, :ftype, :owner, :group]
 
   def checksum_type=(type)
-    raise(ArgumentError, "Unsupported checksum type #{type}") unless respond_to?("#{type}_file")
+    raise(ArgumentError, "Unsupported checksum type #{type}") unless Puppet::Util::Checksums.respond_to?("#{type}_file")
 
     @checksum_type = type
   end
@@ -26,13 +25,24 @@ class Puppet::FileServing::Metadata < Puppet::FileServing::Base
   class MetaStat
     extend Forwardable
 
-    def initialize(stat)
+    def initialize(stat, source_permissions = nil)
       @stat = stat
+      @source_permissions_ignore = (!source_permissions || source_permissions == :ignore)
     end
 
-    def_delegator :@stat, :uid, :owner
-    def_delegator :@stat, :gid, :group
-    def_delegators :@stat, :mode, :ftype
+    def owner
+      @source_permissions_ignore ? Process.euid : @stat.uid
+    end
+
+    def group
+      @source_permissions_ignore ? Process.egid : @stat.gid
+    end
+
+    def mode
+      @source_permissions_ignore ? 0644 : @stat.mode
+    end
+
+    def_delegators :@stat, :ftype
   end
 
   class WindowsStat < MetaStat
@@ -40,9 +50,10 @@ class Puppet::FileServing::Metadata < Puppet::FileServing::Base
       require 'puppet/util/windows/security'
     end
 
-    def initialize(stat, path)
-      super(stat)
+    def initialize(stat, path, source_permissions = nil)
+      super(stat, source_permissions)
       @path = path
+      raise(ArgumentError, "Unsupported Windows source permissions option #{source_permissions}") unless @source_permissions_ignore
     end
 
     { :owner => 'S-1-5-32-544',
@@ -50,28 +61,28 @@ class Puppet::FileServing::Metadata < Puppet::FileServing::Base
       :mode => 0644
     }.each do |method, default_value|
       define_method method do
-        Puppet::Util::Windows::Security.send("get_#{method}", @path) || default_value
+        return default_value
       end
     end
   end
 
-  def collect_stat(path)
+  def collect_stat(path, source_permissions)
     stat = stat()
 
     if Puppet.features.microsoft_windows?
-      WindowsStat.new(stat, path)
+      WindowsStat.new(stat, path, source_permissions)
     else
-      MetaStat.new(stat)
+      MetaStat.new(stat, source_permissions)
     end
   end
 
   # Retrieve the attributes for this file, relative to a base directory.
-  # Note that File.stat raises Errno::ENOENT if the file is absent and this
-  # method does not catch that exception.
-  def collect
+  # Note that Puppet::FileSystem.stat(path) raises Errno::ENOENT
+  # if the file is absent and this method does not catch that exception.
+  def collect(source_permissions = nil)
     real_path = full_path
 
-    stat = collect_stat(real_path)
+    stat = collect_stat(real_path, source_permissions)
     @owner = stat.owner
     @group = stat.group
     @ftype = stat.ftype
@@ -86,7 +97,7 @@ class Puppet::FileServing::Metadata < Puppet::FileServing::Base
       @checksum_type = "ctime"
       @checksum = ("{#{@checksum_type}}") + send("#{@checksum_type}_file", path).to_s
     when "link"
-      @destination = File.readlink(real_path)
+      @destination = Puppet::FileSystem.readlink(real_path)
       @checksum = ("{#{@checksum_type}}") + send("#{@checksum_type}_file", real_path).to_s rescue nil
     else
       raise ArgumentError, "Cannot manage files of type #{stat.ftype}"
@@ -101,41 +112,30 @@ class Puppet::FileServing::Metadata < Puppet::FileServing::Base
       @checksum_type = checksum['type']
       @checksum      = checksum['value']
     end
-    @checksum_type ||= "md5"
+    @checksum_type ||= Puppet[:digest_algorithm]
     @ftype       = data.delete('type')
     @destination = data.delete('destination')
     super(path,data)
   end
 
-  PSON.register_document_type('FileMetadata',self)
-  def to_pson_data_hash
-    {
-      'document_type' => 'FileMetadata',
-
-        'data'       => super['data'].update(
-          {
-          'owner'        => owner,
-          'group'        => group,
-          'mode'         => mode,
-          'checksum'     => {
-            'type'   => checksum_type,
-            'value'  => checksum
+  def to_data_hash
+    super.update(
+      {
+        'owner'        => owner,
+        'group'        => group,
+        'mode'         => mode,
+        'checksum'     => {
+          'type'   => checksum_type,
+          'value'  => checksum
         },
         'type'         => ftype,
         'destination'  => destination,
 
-        }),
-      'metadata' => {
-        'api_version' => 1
-        }
-    }
+      }
+    )
   end
 
-  def to_pson(*args)
-    to_pson_data_hash.to_pson(*args)
-  end
-
-  def self.from_pson(data)
+  def self.from_data_hash(data)
     new(data.delete('path'), data)
   end
 

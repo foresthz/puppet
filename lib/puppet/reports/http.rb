@@ -5,23 +5,27 @@ require 'uri'
 Puppet::Reports.register_report(:http) do
 
   desc <<-DESC
-  Send report information via HTTP to the `reporturl`. Each host sends
-  its report as a YAML dump and this sends this YAML to a client via HTTP POST.
-  The YAML is the body of the request.
+    Send reports via HTTP or HTTPS. This report processor submits reports as
+    POST requests to the address in the `reporturl` setting. The body of each POST
+    request is the YAML dump of a Puppet::Transaction::Report object, and the
+    Content-Type is set as `application/x-yaml`.
   DESC
 
   def process
     url = URI.parse(Puppet[:reporturl])
-    req = Net::HTTP::Post.new(url.path)
-    req.body = self.to_yaml
-    req.content_type = "application/x-yaml"
-    conn = Puppet::Network::HttpPool.http_instance(url.host, url.port,
-                                                   ssl=(url.scheme == 'https'))
-    conn.start {|http|
-      response = http.request(req)
-      unless response.kind_of?(Net::HTTPSuccess)
-        Puppet.err "Unable to submit report to #{Puppet[:reporturl].to_s} [#{response.code}] #{response.msg}"
-      end
-    }
+    headers = { "Content-Type" => "application/x-yaml" }
+    options = {}
+    if url.user && url.password
+      options[:basic_auth] = {
+        :user => url.user,
+        :password => url.password
+      }
+    end
+    use_ssl = url.scheme == 'https'
+    conn = Puppet::Network::HttpPool.http_instance(url.host, url.port, use_ssl)
+    response = conn.post(url.path, self.to_yaml, headers, options)
+    unless response.kind_of?(Net::HTTPSuccess)
+      Puppet.err "Unable to submit report to #{Puppet[:reporturl].to_s} [#{response.code}] #{response.msg}"
+    end
   end
 end

@@ -1,12 +1,14 @@
 require 'uri'
 
+require 'puppet/forge'
+
 class Puppet::Forge
   # = Cache
   #
   # Provides methods for reading files from local cache, filesystem or network.
   class Cache
 
-    # Instantiate new cahe for the +repositry+ instance.
+    # Instantiate new cache for the +repository+ instance.
     def initialize(repository, options = {})
       @repository = repository
       @options = options
@@ -44,7 +46,9 @@ class Puppet::Forge
 
     # Return the base Pathname for all the caches.
     def self.base_path
-      Pathname(Puppet.settings[:module_working_dir]) + 'cache'
+      (Pathname(Puppet.settings[:module_working_dir]) + 'cache').tap do |o|
+        o.mkpath unless o.exist?
+      end
     end
 
     # Clean out all the caches.

@@ -18,7 +18,7 @@ Puppet::Util::Log.newdesttype :syslog do
     begin
       facility = Syslog.const_get("LOG_#{str.upcase}")
     rescue NameError
-      raise Puppet::Error, "Invalid syslog facility #{str}"
+      raise Puppet::Error, "Invalid syslog facility #{str}", $!.backtrace
     end
 
     @syslog = Syslog.open(name, options, facility)
@@ -68,13 +68,22 @@ Puppet::Util::Log.newdesttype :file do
     # first make sure the directory exists
     # We can't just use 'Config.use' here, because they've
     # specified a "special" destination.
-    unless FileTest.exist?(File.dirname(path))
+    unless Puppet::FileSystem.exist?(Puppet::FileSystem.dir(path))
       FileUtils.mkdir_p(File.dirname(path), :mode => 0755)
       Puppet.info "Creating log directory #{File.dirname(path)}"
     end
 
     # create the log file, if it doesn't already exist
     file = File.open(path, File::WRONLY|File::CREAT|File::APPEND)
+
+    # Give ownership to the user and group puppet will run as
+    if Puppet.features.root? && !Puppet::Util::Platform.windows?
+      begin
+        FileUtils.chown(Puppet[:user], Puppet[:group], path)
+      rescue ArgumentError, Errno::EPERM
+        Puppet.err "Unable to set ownership to #{Puppet[:user]}:#{Puppet[:group]} for log file: #{path}"
+      end
+    end
 
     @file = file
 
@@ -85,6 +94,28 @@ Puppet::Util::Log.newdesttype :file do
     @file.puts("#{msg.time} #{msg.source} (#{msg.level}): #{msg}")
 
     @file.flush if @autoflush
+  end
+end
+
+Puppet::Util::Log.newdesttype :logstash_event do
+  require 'time'
+
+  def format(msg)
+    # logstash_event format is documented at
+    # https://logstash.jira.com/browse/LOGSTASH-675
+
+    data = {}
+    data = msg.to_hash
+    data['version'] = 1
+    data['@timestamp'] = data['time']
+    data.delete('time')
+
+    data
+  end
+
+  def handle(msg)
+    message = format(msg)
+    $stdout.puts message.to_pson
   end
 end
 
@@ -99,77 +130,23 @@ Puppet::Util::Log.newdesttype :console do
   end
 
   def handle(msg)
-    error_levels = {
-      :warning => 'Warning',
-      :err     => 'Error',
-      :alert   => 'Alert',
-      :emerg   => 'Emergency',
-      :crit    => 'Critical'
+    levels = {
+      :emerg   => { :name => 'Emergency', :color => :hred,     :stream => $stderr },
+      :alert   => { :name => 'Alert',     :color => :hred,     :stream => $stderr },
+      :crit    => { :name => 'Critical',  :color => :hred,     :stream => $stderr },
+      :err     => { :name => 'Error',     :color => :hred,     :stream => $stderr },
+      :warning => { :name => 'Warning',   :color => :hyellow,  :stream => $stderr },
+
+      :notice  => { :name => 'Notice',    :color => :reset,    :stream => $stdout },
+      :info    => { :name => 'Info',      :color => :green,    :stream => $stdout },
+      :debug   => { :name => 'Debug',     :color => :cyan,     :stream => $stdout },
     }
 
     str = msg.respond_to?(:multiline) ? msg.multiline : msg.to_s
     str = msg.source == "Puppet" ? str : "#{msg.source}: #{str}"
 
-    case msg.level
-    when *error_levels.keys
-      $stderr.puts colorize(:hred, "#{error_levels[msg.level]}: #{str}")
-    when :info
-      $stdout.puts "#{colorize(:green, 'Info')}: #{str}"
-    when :debug
-      $stdout.puts "#{colorize(:cyan, 'Debug')}: #{str}"
-    else
-      $stdout.puts str
-    end
-  end
-end
-
-Puppet::Util::Log.newdesttype :host do
-  def initialize(host)
-    Puppet.info "Treating #{host} as a hostname"
-    args = {}
-    if host =~ /:(\d+)/
-      args[:Port] = $1
-      args[:Server] = host.sub(/:\d+/, '')
-    else
-      args[:Server] = host
-    end
-
-    @name = host
-
-    @driver = Puppet::Network::Client::LogClient.new(args)
-  end
-
-  def handle(msg)
-    unless msg.is_a?(String) or msg.remote
-      @hostname ||= Facter["hostname"].value
-      unless defined?(@domain)
-        @domain = Facter["domain"].value
-        @hostname += ".#{@domain}" if @domain
-      end
-      if Puppet::Util.absolute_path?(msg.source)
-        msg.source = @hostname + ":#{msg.source}"
-      elsif msg.source == "Puppet"
-        msg.source = @hostname + " #{msg.source}"
-      else
-        msg.source = @hostname + " #{msg.source}"
-      end
-      begin
-        #puts "would have sent #{msg}"
-        #puts "would have sent %s" %
-        #    CGI.escape(YAML.dump(msg))
-        begin
-          tmp = CGI.escape(YAML.dump(msg))
-        rescue => detail
-          puts "Could not dump: #{detail}"
-          return
-        end
-        # Add the hostname to the source
-        @driver.addlog(tmp)
-      rescue => detail
-        Puppet.log_exception(detail)
-        Puppet::Util::Log.close(self)
-      end
-    end
+    level = levels[msg.level]
+    level[:stream].puts colorize(level[:color], "#{level[:name]}: #{str}")
   end
 end
 
@@ -214,6 +191,10 @@ Puppet::Util::Log.newdesttype :array do
 end
 
 Puppet::Util::Log.newdesttype :eventlog do
+  Puppet::Util::Log::DestEventlog::EVENTLOG_ERROR_TYPE       = 0x0001
+  Puppet::Util::Log::DestEventlog::EVENTLOG_WARNING_TYPE     = 0x0002
+  Puppet::Util::Log::DestEventlog::EVENTLOG_INFORMATION_TYPE = 0x0004
+
   def self.suitable?(obj)
     Puppet.features.eventlog?
   end
@@ -225,11 +206,11 @@ Puppet::Util::Log.newdesttype :eventlog do
   def to_native(level)
     case level
     when :debug,:info,:notice
-      [Win32::EventLog::INFO, 0x01]
+      [self.class::EVENTLOG_INFORMATION_TYPE, 0x01]
     when :warning
-      [Win32::EventLog::WARN, 0x02]
+      [self.class::EVENTLOG_WARNING_TYPE, 0x02]
     when :err,:alert,:emerg,:crit
-      [Win32::EventLog::ERROR, 0x03]
+      [self.class::EVENTLOG_ERROR_TYPE, 0x03]
     end
   end
 

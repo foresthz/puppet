@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/file_serving/fileset'
@@ -8,6 +8,6 @@ describe Puppet::FileServing::Fileset do
     @path = Tempfile.new("fileset_integration")
 
     fileset = Puppet::FileServing::Fileset.new(@path.path)
-    lambda { fileset.files }.should_not raise_error
+    expect { fileset.files }.not_to raise_error
   end
 end

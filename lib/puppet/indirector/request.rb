@@ -1,68 +1,24 @@
 require 'cgi'
 require 'uri'
 require 'puppet/indirector'
-require 'puppet/util/pson'
 require 'puppet/network/resolver'
+require 'puppet/util/psych_support'
 
 # This class encapsulates all of the information you need to make an
-# Indirection call, and as a a result also handles REST calls.  It's somewhat
+# Indirection call, and as a result also handles REST calls.  It's somewhat
 # analogous to an HTTP Request object, except tuned for our Indirector.
 class Puppet::Indirector::Request
+  include Puppet::Util::PsychSupport
+
   attr_accessor :key, :method, :options, :instance, :node, :ip, :authenticated, :ignore_cache, :ignore_terminus
 
   attr_accessor :server, :port, :uri, :protocol
 
   attr_reader :indirection_name
 
+  # trusted_information is specifically left out because we can't serialize it
+  # and keep it "trusted"
   OPTION_ATTRIBUTES = [:ip, :node, :authenticated, :ignore_terminus, :ignore_cache, :instance, :environment]
-
-  # Load json before trying to register.
-  Puppet.features.pson? and ::PSON.register_document_type('IndirectorRequest',self)
-
-  def self.from_pson(json)
-    raise ArgumentError, "No indirection name provided in json data" unless indirection_name = json['type']
-    raise ArgumentError, "No method name provided in json data" unless method = json['method']
-    raise ArgumentError, "No key provided in json data" unless key = json['key']
-
-    request = new(indirection_name, method, key, nil, json['attributes'])
-
-    if instance = json['instance']
-      klass = Puppet::Indirector::Indirection.instance(request.indirection_name).model
-      if instance.is_a?(klass)
-        request.instance = instance
-      else
-        request.instance = klass.from_pson(instance)
-      end
-    end
-
-    request
-  end
-
-  def to_pson(*args)
-    result = {
-      'document_type' => 'IndirectorRequest',
-      'data' => {
-        'type' => indirection_name,
-        'method' => method,
-        'key' => key
-      }
-    }
-    data = result['data']
-    attributes = {}
-    OPTION_ATTRIBUTES.each do |key|
-      next unless value = send(key)
-      attributes[key] = value
-    end
-
-    options.each do |opt, value|
-      attributes[opt] = value
-    end
-
-    data['attributes'] = attributes unless attributes.empty?
-    data['instance'] = instance if instance
-
-    result.to_pson(*args)
-  end
 
   # Is this an authenticated request?
   def authenticated?
@@ -71,14 +27,17 @@ class Puppet::Indirector::Request
   end
 
   def environment
-    @environment ||= Puppet::Node::Environment.new
+    # If environment has not been set directly, we should use the application's
+    # current environment
+    @environment ||= Puppet.lookup(:current_environment)
   end
 
   def environment=(env)
-    @environment = if env.is_a?(Puppet::Node::Environment)
+    @environment =
+    if env.is_a?(Puppet::Node::Environment)
       env
     else
-      Puppet::Node::Environment.new(env)
+      Puppet.lookup(:environments).get!(env)
     end
   end
 
@@ -137,19 +96,9 @@ class Puppet::Indirector::Request
     @indirection_name = name.to_sym
   end
 
-
   def model
     raise ArgumentError, "Could not find indirection '#{indirection_name}'" unless i = indirection
     i.model
-  end
-
-  # Should we allow use of the cached object?
-  def use_cache?
-    if defined?(@use_cache)
-      ! ! use_cache
-    else
-      true
-    end
   end
 
   # Are we trying to interact with multiple resources, or just one?
@@ -159,21 +108,59 @@ class Puppet::Indirector::Request
 
   # Create the query string, if options are present.
   def query_string
-    return "" unless options and ! options.empty?
-    "?" + options.collect do |key, value|
+    return "" if options.nil? || options.empty?
+    encode_params(expand_into_parameters(options.to_a))
+  end
+
+  def expand_into_parameters(data)
+    data.inject([]) do |params, key_value|
+      key, value = key_value
+
+      expanded_value = case value
+                       when Array
+                         value.collect { |val| [key, val] }
+                       else
+                         [key_value]
+                       end
+
+      params.concat(expand_primitive_types_into_parameters(expanded_value))
+    end
+  end
+
+  def expand_primitive_types_into_parameters(data)
+    data.inject([]) do |params, key_value|
+      key, value = key_value
       case value
-      when nil; next
-      when true, false; value = value.to_s
-      when Fixnum, Bignum, Float; value = value # nothing
-      when String; value = CGI.escape(value)
-      when Symbol; value = CGI.escape(value.to_s)
-      when Array; value = CGI.escape(YAML.dump(value))
+      when nil
+        params
+      when true, false, String, Symbol, Fixnum, Bignum, Float
+        params << [key, value]
       else
         raise ArgumentError, "HTTP REST queries cannot handle values of type '#{value.class}'"
       end
+    end
+  end
 
-      "#{key}=#{value}"
+  def encode_params(params)
+    params.collect do |key, value|
+      "#{key}=#{CGI.escape(value.to_s)}"
     end.join("&")
+  end
+
+  def initialize_from_hash(hash)
+    @indirection_name = hash['indirection_name'].to_sym
+    @method = hash['method'].to_sym
+    @key = hash['key']
+    @instance = hash['instance']
+    @options = hash['options']
+  end
+
+  def to_data_hash
+    { 'indirection_name' => @indirection_name.to_s,
+      'method' => @method.to_s,
+      'key' => @key,
+      'instance' => @instance,
+      'options' => @options }
   end
 
   def to_hash
@@ -187,7 +174,7 @@ class Puppet::Indirector::Request
     result
   end
 
-  def to_s
+  def description
     return(uri ? uri : "/#{indirection_name}/#{key}")
   end
 
@@ -216,6 +203,10 @@ class Puppet::Indirector::Request
     return yield(self)
   end
 
+  def remote?
+    self.node or self.ip
+  end
+
   private
 
   def set_attributes(options)
@@ -233,7 +224,7 @@ class Puppet::Indirector::Request
     begin
       uri = URI.parse(URI.escape(key))
     rescue => detail
-      raise ArgumentError, "Could not understand URL #{key}: #{detail}"
+      raise ArgumentError, "Could not understand URL #{key}: #{detail}", detail.backtrace
     end
 
     # Just short-circuit these to full paths

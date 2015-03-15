@@ -2,6 +2,9 @@ require 'puppet/property'
 
 module Puppet
   class Property
+    # This subclass of {Puppet::Property} manages an unordered list of values.
+    # For an ordered list see {Puppet::Property::OrderedList}.
+    #
     class List < Property
 
       def should_to_s(should_value)
@@ -51,7 +54,7 @@ module Puppet
 
       def retrieve
         #ok, some 'convention' if the list property is named groups, provider should implement a groups method
-        if tmp = provider.send(name) and tmp != :absent
+        if provider and tmp = provider.send(name) and tmp != :absent
           return tmp.split(delimiter)
         else
           return :absent

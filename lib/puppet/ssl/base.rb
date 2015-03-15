@@ -1,9 +1,15 @@
+require 'openssl'
 require 'puppet/ssl'
+require 'puppet/ssl/digest'
+require 'puppet/util/ssl'
 
 # The base class for wrapping SSL instances.
 class Puppet::SSL::Base
   # For now, use the YAML separator.
   SEPARATOR = "\n---\n"
+
+  # Only allow printing ascii characters, excluding /
+  VALID_CERTNAME = /\A[ -.0-~]+\Z/
 
   def self.from_multiple_s(text)
     text.split(SEPARATOR).collect { |inst| from_s(inst) }
@@ -22,6 +28,10 @@ class Puppet::SSL::Base
     @wrapped_class
   end
 
+  def self.validate_certname(name)
+    raise "Certname #{name.inspect} must not contain unprintable or non-ASCII characters" unless name =~ VALID_CERTNAME
+  end
+
   attr_accessor :name, :content
 
   # Is this file for the CA?
@@ -35,6 +45,38 @@ class Puppet::SSL::Base
 
   def initialize(name)
     @name = name.to_s.downcase
+    self.class.validate_certname(@name)
+  end
+
+  ##
+  # name_from_subject extracts the common name attribute from the subject of an
+  # x.509 certificate certificate
+  #
+  # @api private
+  #
+  # @param [OpenSSL::X509::Name] subject The full subject (distinguished name) of the x.509
+  #   certificate.
+  #
+  # @return [String] the name (CN) extracted from the subject.
+  def self.name_from_subject(subject)
+    Puppet::Util::SSL.cn_from_subject(subject)
+  end
+
+  # Create an instance of our Puppet::SSL::* class using a given instance of the wrapped class
+  def self.from_instance(instance, name = nil)
+    raise ArgumentError, "Object must be an instance of #{wrapped_class}, #{instance.class} given" unless instance.is_a? wrapped_class
+    raise ArgumentError, "Name must be supplied if it cannot be determined from the instance" if name.nil? and !instance.respond_to?(:subject)
+
+    name ||= name_from_subject(instance.subject)
+    result = new(name)
+    result.content = instance
+    result
+  end
+
+  # Convert a string into an instance
+  def self.from_s(string, name = nil)
+    instance = wrapped_class.new(string)
+    from_instance(instance, name)
   end
 
   # Read content from disk appropriately.
@@ -48,6 +90,10 @@ class Puppet::SSL::Base
     content.to_pem
   end
 
+  def to_data_hash
+    to_s
+  end
+
   # Provide the full text of the thing we're dealing with.
   def to_text
     return "" unless content
@@ -55,20 +101,35 @@ class Puppet::SSL::Base
   end
 
   def fingerprint(md = :SHA256)
-    require 'openssl'
-
-    # ruby 1.8.x openssl digest constants are string
-    # but in 1.9.x they are symbols
     mds = md.to_s.upcase
-    if OpenSSL::Digest.constants.include?(mds)
-      md = mds
-    elsif OpenSSL::Digest.constants.include?(mds.to_sym)
-      md = mds.to_sym
-    else
-      raise ArgumentError, "#{md} is not a valid digest algorithm for fingerprinting certificate #{name}"
+    digest(mds).to_hex
+  end
+
+  def digest(algorithm=nil)
+    unless algorithm
+      algorithm = digest_algorithm
     end
 
-    OpenSSL::Digest.const_get(md).hexdigest(content.to_der).scan(/../).join(':').upcase
+    Puppet::SSL::Digest.new(algorithm, content.to_der)
+  end
+
+  def digest_algorithm
+    # The signature_algorithm on the X509 cert is a combination of the digest
+    # algorithm and the encryption algorithm
+    # e.g. md5WithRSAEncryption, sha256WithRSAEncryption
+    # Unfortunately there isn't a consistent pattern
+    # See RFCs 3279, 5758
+    digest_re = Regexp.union(
+      /ripemd160/i,
+      /md[245]/i,
+      /sha\d*/i
+    )
+    ln = content.signature_algorithm
+    if match = digest_re.match(ln)
+      match[0].downcase
+    else
+      raise Puppet::Error, "Unknown signature algorithm '#{ln}'"
+    end
   end
 
   private

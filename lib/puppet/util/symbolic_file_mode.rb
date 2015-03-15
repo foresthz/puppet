@@ -1,6 +1,8 @@
 require 'puppet/util'
 
-module Puppet::Util::SymbolicFileMode
+module Puppet
+module Util
+module SymbolicFileMode
   SetUIDBit = ReadBit  = 4
   SetGIDBit = WriteBit = 2
   StickyBit = ExecBit  = 1
@@ -126,7 +128,7 @@ module Puppet::Util::SymbolicFileMode
           rest = ''
         end
 
-        raise Puppet::Error, "#{e}#{rest} in symbolic mode #{modification.inspect}"
+        raise Puppet::Error, "#{e}#{rest} in symbolic mode #{modification.inspect}", e.backtrace
       end
     end
 
@@ -137,4 +139,6 @@ module Puppet::Util::SymbolicFileMode
       final_mode['o'] << 0
     return result
   end
+end
+end
 end

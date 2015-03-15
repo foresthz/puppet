@@ -1,24 +1,29 @@
+require 'puppet/parser/type_loader'
+require 'puppet/util/file_watcher'
+require 'puppet/util/warnings'
+
 class Puppet::Resource::TypeCollection
   attr_reader :environment
   attr_accessor :parse_failed
+
+  include Puppet::Util::Warnings
 
   def clear
     @hostclasses.clear
     @definitions.clear
     @nodes.clear
-    @watched_files.clear
+    @notfound.clear
   end
 
   def initialize(env)
-    @environment = env.is_a?(String) ? Puppet::Node::Environment.new(env) : env
+    @environment = env
     @hostclasses = {}
     @definitions = {}
     @nodes = {}
+    @notfound = {}
 
     # So we can keep a list and match the first-defined regex
     @node_list = []
-
-    @watched_files = {}
   end
 
   def import_ast(ast, modname)
@@ -68,7 +73,6 @@ class Puppet::Resource::TypeCollection
   end
 
   def loader
-    require 'puppet/parser/type_loader'
     @loader ||= Puppet::Parser::TypeLoader.new(environment)
   end
 
@@ -79,9 +83,9 @@ class Puppet::Resource::TypeCollection
       return node
     end
 
-    @node_list.each do |node|
-      next unless node.name_is_regex?
-      return node if node.match(name)
+    @node_list.each do |n|
+      next unless n.name_is_regex?
+      return n if n.match(name)
     end
     nil
   end
@@ -104,16 +108,16 @@ class Puppet::Resource::TypeCollection
     @definitions[munge_name(name)]
   end
 
-  def find_node(namespaces, name)
+  def find_node(name)
     @nodes[munge_name(name)]
   end
 
-  def find_hostclass(namespaces, name, options = {})
-    find_or_load(namespaces, name, :hostclass, options)
+  def find_hostclass(name)
+    find_or_load(name, :hostclass)
   end
 
-  def find_definition(namespaces, name)
-    find_or_load(namespaces, name, :definition)
+  def find_definition(name)
+    find_or_load(name, :definition)
   end
 
   [:hostclasses, :nodes, :definitions].each do |m|
@@ -122,85 +126,49 @@ class Puppet::Resource::TypeCollection
     end
   end
 
-  def require_reparse?
-    @parse_failed || stale?
-  end
-
-  def stale?
-    @watched_files.values.detect { |file| file.changed? }
+  def parse_failed?
+    @parse_failed
   end
 
   def version
-    return @version if defined?(@version)
-
-    if environment[:config_version] == ""
-      @version = Time.now.to_i
-      return @version
+    if !defined?(@version)
+      if environment.config_version.nil? || environment.config_version == ""
+        @version = Time.now.to_i
+      else
+        @version = Puppet::Util::Execution.execute([environment.config_version]).strip
+      end
     end
 
-    @version = Puppet::Util::Execution.execute([environment[:config_version]]).strip
-
+    @version
   rescue Puppet::ExecutionFailure => e
-    raise Puppet::ParseError, "Unable to set config_version: #{e.message}"
-  end
-
-  def watch_file(file)
-    @watched_files[file] = Puppet::Util::LoadedFile.new(file)
-  end
-
-  def watching_file?(file)
-    @watched_files.include?(file)
+    raise Puppet::ParseError, "Execution of config_version command `#{environment.config_version}` failed: #{e.message}", e.backtrace
   end
 
   private
 
-  # Return a list of all possible fully-qualified names that might be
-  # meant by the given name, in the context of namespaces.
-  def resolve_namespaces(namespaces, name)
-    name      = name.downcase
-    if name =~ /^::/
-      # name is explicitly fully qualified, so just return it, sans
-      # initial "::".
-      return [name.sub(/^::/, '')]
-    end
-    if name == ""
-      # The name "" has special meaning--it always refers to a "main"
-      # hostclass which contains all toplevel resources.
-      return [""]
-    end
-
-    namespaces = [namespaces] unless namespaces.is_a?(Array)
-    namespaces = namespaces.collect { |ns| ns.downcase }
-
-    result = []
-    namespaces.each do |namespace|
-      ary = namespace.split("::")
-
-      # Search each namespace nesting in innermost-to-outermost order.
-      while ary.length > 0
-        result << "#{ary.join("::")}::#{name}"
-        ary.pop
-      end
-
-      # Finally, search the toplevel namespace.
-      result << name
-    end
-
-    return result.uniq
-  end
+  COLON_COLON = "::".freeze
 
   # Resolve namespaces and find the given object.  Autoload it if
   # necessary.
-  def find_or_load(namespaces, name, type, options = {})
-    searchspace = options[:assume_fqname] ? [name].flatten : resolve_namespaces(namespaces, name)
-    searchspace.each do |fqname|
-      if result = send(type, fqname) || loader.try_load_fqname(type, fqname)
-        return result
+  def find_or_load(name, type)
+    # Name is always absolute, but may start with :: which must be removed
+    fqname = (name[0,2] == COLON_COLON ? name[2..-1] : name)
+
+    result = send(type, fqname)
+    unless result
+      if @notfound[ fqname ] && Puppet[ :ignoremissingtypes ]
+        # do not try to autoload if we already tried and it wasn't conclusive
+        # as this is a time consuming operation. Warn the user.
+        # Check first if debugging is on since the call to debug_once is expensive
+        if Puppet[:debug]
+          debug_once "Not attempting to load #{type} #{fqname} as this object was missing during a prior compilation"
+        end
+      else
+        result = loader.try_load_fqname(type, fqname)
+        @notfound[ fqname ] = result.nil?
       end
     end
-
-    # Nothing found.
-    return nil
+    result
   end
 
   def munge_name(name)

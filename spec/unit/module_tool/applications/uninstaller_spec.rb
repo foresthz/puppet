@@ -1,212 +1,163 @@
 require 'spec_helper'
 require 'puppet/module_tool'
 require 'tmpdir'
-require 'puppet_spec/modules'
+require 'puppet_spec/module_tool/shared_functions'
+require 'puppet_spec/module_tool/stub_source'
 
 describe Puppet::ModuleTool::Applications::Uninstaller do
+  include PuppetSpec::ModuleTool::SharedFunctions
   include PuppetSpec::Files
 
-  def mkmod(name, path, metadata=nil)
-    modpath = File.join(path, name)
-    FileUtils.mkdir_p(modpath)
-
-    if metadata
-      File.open(File.join(modpath, 'metadata.json'), 'w') do |f|
-        f.write(metadata.to_pson)
-      end
-    end
-
-    modpath
+  before do
+    FileUtils.mkdir_p(primary_dir)
+    FileUtils.mkdir_p(secondary_dir)
   end
 
-  describe "the behavior of the instances" do
+  let(:environment) do
+    Puppet.lookup(:current_environment).override_with(
+      :vardir     => vardir,
+      :modulepath => [ primary_dir, secondary_dir ]
+    )
+  end
 
-    before do
-      @uninstaller = Puppet::ModuleTool::Applications::Uninstaller
-      FileUtils.mkdir_p(modpath1)
-      FileUtils.mkdir_p(modpath2)
-      fake_env.modulepath = [modpath1, modpath2]
+  let(:vardir)   { tmpdir('uninstaller') }
+  let(:primary_dir) { File.join(vardir, "primary") }
+  let(:secondary_dir) { File.join(vardir, "secondary") }
+  let(:remote_source) { PuppetSpec::ModuleTool::StubSource.new }
+
+  let(:module) { 'module-not_installed' }
+  let(:application) do
+    opts = options
+    Puppet::ModuleTool.set_option_defaults(opts)
+    Puppet::ModuleTool::Applications::Uninstaller.new(self.module, opts)
+  end
+
+  def options
+    { :environment => environment }
+  end
+
+  subject { application.run }
+
+  context "when the module is not installed" do
+    it "should fail" do
+      expect(subject).to include :result => :failure
+    end
+  end
+
+  context "when the module is installed" do
+    let(:module) { 'pmtacceptance-stdlib' }
+
+    before { preinstall('pmtacceptance-stdlib', '1.0.0') }
+    before { preinstall('pmtacceptance-apache', '0.0.4') }
+
+    it "should uninstall the module" do
+      expect(subject[:affected_modules].first.forge_name).to eq("pmtacceptance/stdlib")
     end
 
-    let(:modpath1) { File.join(tmpdir("uninstaller"), "modpath1") }
-    let(:modpath2) { File.join(tmpdir("uninstaller"), "modpath2") }
-    let(:fake_env) { Puppet::Node::Environment.new('fake_env') }
-    let(:options)  { {:environment => "fake_env"} }
-
-    let(:foo_metadata) do
-      {
-        :author       => "puppetlabs",
-        :name         => "puppetlabs/foo",
-        :version      => "1.0.0",
-        :source       => "http://dummyurl/foo",
-        :license      => "Apache2",
-        :dependencies => [],
-      }
+    it "should only uninstall the requested module" do
+      subject[:affected_modules].length == 1
     end
 
-    let(:bar_metadata) do
-      {
-        :author       => "puppetlabs",
-        :name         => "puppetlabs/bar",
-        :version      => "1.0.0",
-        :source       => "http://dummyurl/bar",
-        :license      => "Apache2",
-        :dependencies => [],
-      }
-    end
+    context 'in two modulepaths' do
+      before { preinstall('pmtacceptance-stdlib', '2.0.0', :into => secondary_dir) }
 
-    context "when the module is not installed" do
-      it "should fail" do
-        @uninstaller.new('fakemod_not_installed', options).run[:result].should == :failure
+      it "should fail if a module exists twice in the modpath" do
+        expect(subject).to include :result => :failure
       end
     end
 
-    context "when the module is installed" do
-
-      it "should uninstall the module" do
-        pending("porting to Windows", :if => Puppet.features.microsoft_windows?) do
-          PuppetSpec::Modules.create('foo', modpath1, :metadata => foo_metadata)
-
-          results = @uninstaller.new("puppetlabs-foo", options).run
-          results[:affected_modules].first.forge_name.should == "puppetlabs/foo"
-        end
+    context "when options[:version] is specified" do
+      def options
+        super.merge(:version => '1.0.0')
       end
 
-      it "should only uninstall the requested module" do
-        pending("porting to Windows", :if => Puppet.features.microsoft_windows?) do
-          PuppetSpec::Modules.create('foo', modpath1, :metadata => foo_metadata)
-          PuppetSpec::Modules.create('bar', modpath1, :metadata => bar_metadata)
-
-          results = @uninstaller.new("puppetlabs-foo", options).run
-          results[:affected_modules].length == 1
-          results[:affected_modules].first.forge_name.should == "puppetlabs/foo"
-        end
+      it "should uninstall the module if the version matches" do
+        expect(subject[:affected_modules].length).to eq(1)
+        expect(subject[:affected_modules].first.version).to eq("1.0.0")
       end
 
-      it "should uninstall fail if a module exists twice in the modpath" do
-        PuppetSpec::Modules.create('foo', modpath1, :metadata => foo_metadata)
-        PuppetSpec::Modules.create('foo', modpath2, :metadata => foo_metadata)
-
-        @uninstaller.new('puppetlabs-foo', options).run[:result].should == :failure
-      end
-
-      context "when options[:version] is specified" do
-
-        it "should uninstall the module if the version matches" do
-          pending("porting to Windows", :if => Puppet.features.microsoft_windows?) do
-            PuppetSpec::Modules.create('foo', modpath1, :metadata => foo_metadata)
-
-            options[:version] = "1.0.0"
-
-            results = @uninstaller.new("puppetlabs-foo", options).run
-            results[:affected_modules].length.should == 1
-            results[:affected_modules].first.forge_name.should == "puppetlabs/foo"
-            results[:affected_modules].first.version.should == "1.0.0"
-          end
+      context 'but not matched' do
+        def options
+          super.merge(:version => '2.0.0')
         end
 
         it "should not uninstall the module if the version does not match" do
-          PuppetSpec::Modules.create('foo', modpath1, :metadata => foo_metadata)
+          expect(subject).to include :result => :failure
+        end
+      end
+    end
 
-          options[:version] = "2.0.0"
+    context "when the module metadata is missing" do
+      before { File.unlink(File.join(primary_dir, 'stdlib', 'metadata.json')) }
 
-          @uninstaller.new("puppetlabs-foo", options).run[:result].should == :failure
+      it "should not uninstall the module" do
+        expect(application.run[:result]).to eq(:failure)
+      end
+    end
+
+    context "when the module has local changes" do
+      before do
+        mark_changed(File.join(primary_dir, 'stdlib'))
+      end
+
+      it "should not uninstall the module" do
+        expect(subject).to include :result => :failure
+      end
+    end
+
+    context "when uninstalling the module will cause broken dependencies" do
+      before { preinstall('pmtacceptance-apache', '0.10.0') }
+
+      it "should not uninstall the module" do
+        expect(subject).to include :result => :failure
+      end
+    end
+
+    context 'with --ignore-changes' do
+      def options
+        super.merge(:ignore_changes => true)
+      end
+
+      context 'with local changes' do
+        before do
+          mark_changed(File.join(primary_dir, 'stdlib'))
+        end
+
+        it 'overwrites the installed module with the greatest version matching that range' do
+          expect(subject).to include :result => :success
         end
       end
 
-      context "when the module metadata is missing" do
-
-        it "should not uninstall the module" do
-          PuppetSpec::Modules.create('foo', modpath1)
-
-          @uninstaller.new("puppetlabs-foo", options).run[:result].should == :failure
+      context 'without local changes' do
+        it 'overwrites the installed module with the greatest version matching that range' do
+          expect(subject).to include :result => :success
         end
       end
+    end
 
-      context "when the module has local changes" do
+    context "when using the --force flag" do
 
-        it "should not uninstall the module" do
-          PuppetSpec::Modules.create('foo', modpath1, :metadata => foo_metadata)
-          Puppet::Module.any_instance.stubs(:has_local_changes?).returns(true)
-
-          @uninstaller.new("puppetlabs-foo", options).run[:result].should == :failure
-        end
-
+      def options
+        super.merge(:force => true)
       end
 
-      context "when the module does not have local changes" do
-
-        it "should uninstall the module" do
-          pending("porting to Windows", :if => Puppet.features.microsoft_windows?) do
-            PuppetSpec::Modules.create('foo', modpath1, :metadata => foo_metadata)
-
-            results = @uninstaller.new("puppetlabs-foo", options).run
-            results[:affected_modules].length.should == 1
-            results[:affected_modules].first.forge_name.should == "puppetlabs/foo"
-          end
-        end
-      end
-
-      context "when uninstalling the module will cause broken dependencies" do
-        it "should not uninstall the module" do
-          Puppet.settings[:modulepath] = modpath1
-          PuppetSpec::Modules.create('foo', modpath1, :metadata => foo_metadata)
-
-          PuppetSpec::Modules.create(
-            'needy',
-            modpath1,
-            :metadata => {
-              :author => 'beggar',
-              :dependencies => [{
-                  "version_requirement" => ">= 1.0.0",
-                  "name" => "puppetlabs/foo"
-              }]
-            }
-          )
-
-          @uninstaller.new("puppetlabs-foo", options).run[:result].should == :failure
-        end
-      end
-
-      context "when using the --force flag" do
-
-        let(:fakemod) do
-          stub(
-            :forge_name => 'puppetlabs/fakemod',
-            :version    => '0.0.1',
-            :has_local_changes? => true
-          )
+      context "with local changes" do
+        before do
+          mark_changed(File.join(primary_dir, 'stdlib'))
         end
 
         it "should ignore local changes" do
-          foo = mkmod("foo", modpath1, foo_metadata)
-          options[:force] = true
-
-          results = @uninstaller.new("puppetlabs-foo", options).run
-          results[:affected_modules].length.should == 1
-          results[:affected_modules].first.forge_name.should == "puppetlabs/foo"
+          expect(subject[:affected_modules].length).to eq(1)
+          expect(subject[:affected_modules].first.forge_name).to eq("pmtacceptance/stdlib")
         end
+      end
+
+      context "while depended upon" do
+        before { preinstall('pmtacceptance-apache', '0.10.0') }
 
         it "should ignore broken dependencies" do
-          Puppet.settings[:modulepath] = modpath1
-          PuppetSpec::Modules.create('foo', modpath1, :metadata => foo_metadata)
-
-          PuppetSpec::Modules.create(
-            'needy',
-            modpath1,
-            :metadata => {
-              :author => 'beggar',
-              :dependencies => [{
-                  "version_requirement" => ">= 1.0.0",
-                  "name" => "puppetlabs/foo"
-              }]
-            }
-          )
-          options[:force] = true
-
-          results = @uninstaller.new("puppetlabs-foo", options).run
-          results[:affected_modules].length.should == 1
-          results[:affected_modules].first.forge_name.should == "puppetlabs/foo"
+          expect(subject[:affected_modules].length).to eq(1)
+          expect(subject[:affected_modules].first.forge_name).to eq("pmtacceptance/stdlib")
         end
       end
     end

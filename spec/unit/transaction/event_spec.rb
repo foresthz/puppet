@@ -1,55 +1,62 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/transaction/event'
 
+class TestResource
+  def to_s
+    "Foo[bar]"
+  end
+  def [](v)
+    nil
+  end
+end
+
 describe Puppet::Transaction::Event do
   include PuppetSpec::Files
 
-  [:previous_value, :desired_value, :property, :resource, :name, :message, :file, :line, :tags, :audited].each do |attr|
-    it "should support #{attr}" do
-      event = Puppet::Transaction::Event.new
-      event.send(attr.to_s + "=", "foo")
-      event.send(attr).should == "foo"
-    end
+  it "should support resource" do
+    event = Puppet::Transaction::Event.new
+    event.resource = TestResource.new
+    expect(event.resource).to eq("Foo[bar]")
   end
 
   it "should always convert the property to a string" do
-    Puppet::Transaction::Event.new(:property => :foo).property.should == "foo"
+    expect(Puppet::Transaction::Event.new(:property => :foo).property).to eq("foo")
   end
 
   it "should always convert the resource to a string" do
-    Puppet::Transaction::Event.new(:resource => :foo).resource.should == "foo"
+    expect(Puppet::Transaction::Event.new(:resource => TestResource.new).resource).to eq("Foo[bar]")
   end
 
   it "should produce the message when converted to a string" do
     event = Puppet::Transaction::Event.new
     event.expects(:message).returns "my message"
-    event.to_s.should == "my message"
+    expect(event.to_s).to eq("my message")
   end
 
   it "should support 'status'" do
     event = Puppet::Transaction::Event.new
     event.status = "success"
-    event.status.should == "success"
+    expect(event.status).to eq("success")
   end
 
   it "should fail if the status is not to 'audit', 'noop', 'success', or 'failure" do
     event = Puppet::Transaction::Event.new
-    lambda { event.status = "foo" }.should raise_error(ArgumentError)
+    expect { event.status = "foo" }.to raise_error(ArgumentError)
   end
 
   it "should support tags" do
-    Puppet::Transaction::Event.ancestors.should include(Puppet::Util::Tagging)
+    expect(Puppet::Transaction::Event.ancestors).to include(Puppet::Util::Tagging)
   end
 
   it "should create a timestamp at its creation time" do
-    Puppet::Transaction::Event.new.time.should be_instance_of(Time)
+    expect(Puppet::Transaction::Event.new.time).to be_instance_of(Time)
   end
 
   describe "audit property" do
     it "should default to false" do
-      Puppet::Transaction::Event.new.audited.should == false
+      expect(Puppet::Transaction::Event.new.audited).to eq(false)
     end
   end
 
@@ -86,7 +93,7 @@ describe Puppet::Transaction::Event do
     end
 
     it "should set the tags to the event tags" do
-      Puppet::Util::Log.expects(:new).with { |args| args[:tags] == %w{one two} }
+      Puppet::Util::Log.expects(:new).with { |args| expect(args[:tags].to_a).to match_array(%w{one two}) }
       Puppet::Transaction::Event.new(:tags => %w{one two}).send_log
     end
 
@@ -99,17 +106,17 @@ describe Puppet::Transaction::Event do
 
     it "should use the source description as the source if one is set" do
       Puppet::Util::Log.expects(:new).with { |args| args[:source] == "/my/param" }
-      Puppet::Transaction::Event.new(:source_description => "/my/param", :resource => "Foo[bar]", :property => "foo").send_log
+      Puppet::Transaction::Event.new(:source_description => "/my/param", :resource => TestResource.new, :property => "foo").send_log
     end
 
     it "should use the property as the source if one is available and no source description is set" do
       Puppet::Util::Log.expects(:new).with { |args| args[:source] == "foo" }
-      Puppet::Transaction::Event.new(:resource => "Foo[bar]", :property => "foo").send_log
+      Puppet::Transaction::Event.new(:resource => TestResource.new, :property => "foo").send_log
     end
 
     it "should use the property as the source if one is available and no property or source description is set" do
       Puppet::Util::Log.expects(:new).with { |args| args[:source] == "Foo[bar]" }
-      Puppet::Transaction::Event.new(:resource => "Foo[bar]").send_log
+      Puppet::Transaction::Event.new(:resource => TestResource.new).send_log
     end
   end
 
@@ -122,7 +129,64 @@ describe Puppet::Transaction::Event do
                                              :message => "Help I'm trapped in a spec test",
                                              :name => :mode_changed, :previous_value => 6, :property => :mode,
                                              :status => 'success')
-      event.to_yaml_properties.should == Puppet::Transaction::Event::YAML_ATTRIBUTES.sort
+      expect(event.to_yaml_properties).to match_array(Puppet::Transaction::Event::YAML_ATTRIBUTES)
     end
+  end
+
+  it "should round trip through pson" do
+      resource = Puppet::Type.type(:file).new(:title => make_absolute("/tmp/foo"))
+      event = Puppet::Transaction::Event.new(
+        :source_description => "/my/param",
+        :resource => resource,
+        :file => "/foo.rb",
+        :line => 27,
+        :tags => %w{one two},
+        :desired_value => 7,
+        :historical_value => 'Brazil',
+        :message => "Help I'm trapped in a spec test",
+        :name => :mode_changed,
+        :previous_value => 6,
+        :property => :mode,
+        :status => 'success')
+
+      tripped = Puppet::Transaction::Event.from_data_hash(PSON.parse(event.to_pson))
+
+      expect(tripped.audited).to eq(event.audited)
+      expect(tripped.property).to eq(event.property)
+      expect(tripped.previous_value).to eq(event.previous_value)
+      expect(tripped.desired_value).to eq(event.desired_value)
+      expect(tripped.historical_value).to eq(event.historical_value)
+      expect(tripped.message).to eq(event.message)
+      expect(tripped.name).to eq(event.name)
+      expect(tripped.status).to eq(event.status)
+      expect(tripped.time).to eq(event.time)
+  end
+
+  it "should round trip an event for an inspect report through pson" do
+      resource = Puppet::Type.type(:file).new(:title => make_absolute("/tmp/foo"))
+      event = Puppet::Transaction::Event.new(
+        :audited => true,
+        :source_description => "/my/param",
+        :resource => resource,
+        :file => "/foo.rb",
+        :line => 27,
+        :tags => %w{one two},
+        :message => "Help I'm trapped in a spec test",
+        :previous_value => 6,
+        :property => :mode,
+        :status => 'success')
+
+      tripped = Puppet::Transaction::Event.from_data_hash(PSON.parse(event.to_pson))
+
+      expect(tripped.desired_value).to be_nil
+      expect(tripped.historical_value).to be_nil
+      expect(tripped.name).to be_nil
+
+      expect(tripped.audited).to eq(event.audited)
+      expect(tripped.property).to eq(event.property)
+      expect(tripped.previous_value).to eq(event.previous_value)
+      expect(tripped.message).to eq(event.message)
+      expect(tripped.status).to eq(event.status)
+      expect(tripped.time).to eq(event.time)
   end
 end

@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/indirector/direct_file_server'
@@ -26,14 +26,16 @@ describe Puppet::Indirector::DirectFileServer do
   describe Puppet::Indirector::DirectFileServer, "when finding a single file" do
 
     it "should return nil if the file does not exist" do
-      FileTest.expects(:exists?).with(@path).returns false
-      @server.find(@request).should be_nil
+      Puppet::FileSystem.expects(:exist?).with(@path).returns false
+      expect(@server.find(@request)).to be_nil
     end
 
     it "should return a Content instance created with the full path to the file if the file exists" do
-      FileTest.expects(:exists?).with(@path).returns true
-      @model.expects(:new).returns(:mycontent)
-      @server.find(@request).should == :mycontent
+      Puppet::FileSystem.expects(:exist?).with(@path).returns true
+      mycontent = stub 'content', :collect => nil
+      mycontent.expects(:collect)
+      @model.expects(:new).returns(mycontent)
+      expect(@server.find(@request)).to eq(mycontent)
     end
   end
 
@@ -42,7 +44,7 @@ describe Puppet::Indirector::DirectFileServer do
     before do
       @data = mock 'content'
       @data.stubs(:collect)
-      FileTest.expects(:exists?).with(@path).returns true
+      Puppet::FileSystem.expects(:exist?).with(@path).returns true
     end
 
     it "should pass the full path to the instance" do
@@ -57,22 +59,30 @@ describe Puppet::Indirector::DirectFileServer do
       @request.stubs(:options).returns(:links => :manage)
       @server.find(@request)
     end
+
+    it "should set 'checksum_type' on the instances if it is set in the request options" do
+      @model.expects(:new).returns(@data)
+      @data.expects(:checksum_type=).with :checksum
+
+      @request.stubs(:options).returns(:checksum_type => :checksum)
+      @server.find(@request)
+    end
   end
 
   describe Puppet::Indirector::DirectFileServer, "when searching for multiple files" do
     it "should return nil if the file does not exist" do
-      FileTest.expects(:exists?).with(@path).returns false
-      @server.find(@request).should be_nil
+      Puppet::FileSystem.expects(:exist?).with(@path).returns false
+      expect(@server.find(@request)).to be_nil
     end
 
     it "should use :path2instances from the terminus_helper to return instances if the file exists" do
-      FileTest.expects(:exists?).with(@path).returns true
+      Puppet::FileSystem.expects(:exist?).with(@path).returns true
       @server.expects(:path2instances)
       @server.search(@request)
     end
 
     it "should pass the original request to :path2instances" do
-      FileTest.expects(:exists?).with(@path).returns true
+      Puppet::FileSystem.expects(:exist?).with(@path).returns true
       @server.expects(:path2instances).with(@request, @path)
       @server.search(@request)
     end

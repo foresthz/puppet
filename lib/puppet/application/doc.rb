@@ -49,101 +49,52 @@ class Puppet::Application::Doc < Puppet::Application
   end
 
   def help
-    <<-HELP
+    <<-'HELP'
 
-puppet-doc(8) -- Generate Puppet documentation and references
+puppet-doc(8) -- Generate Puppet references
 ========
 
 SYNOPSIS
 --------
 Generates a reference for all Puppet types. Largely meant for internal
-Puppet Labs use.
-
-WARNING: RDoc support is only available under Ruby 1.8.7 and earlier.
+Puppet Labs use. (Deprecated)
 
 
 USAGE
 -----
-puppet doc [-a|--all] [-h|--help] [-o|--outputdir <rdoc-outputdir>]
-  [-m|--mode text|pdf|rdoc] [-r|--reference <reference-name>]
-  [--charset <charset>] [<manifest-file>]
+puppet doc [-h|--help] [-l|--list]
+  [-r|--reference <reference-name>]
 
 
 DESCRIPTION
 -----------
-If mode is not 'rdoc', then this command generates a Markdown document
+This deprecated command generates a Markdown document to stdout
 describing all installed Puppet types or all allowable arguments to
 puppet executables. It is largely meant for internal use and is used to
 generate the reference document available on the Puppet Labs web site.
 
-In 'rdoc' mode, this command generates an html RDoc hierarchy describing
-the manifests that are in 'manifestdir' and 'modulepath' configuration
-directives. The generated documentation directory is doc by default but
-can be changed with the 'outputdir' option.
+For Puppet module documentation (and all other use cases) this command
+has been superseded by the "puppet-strings"
+module - see https://github.com/puppetlabs/puppetlabs-strings for more information.
 
-If the command is run with the name of a manifest file as an argument,
-puppet doc will output a single manifest's documentation on stdout.
-
-WARNING: RDoc support is only available under Ruby 1.8.7 and earlier.
-The internal API used to support manifest documentation has changed
-radically in newer versions, and support is not yet available for
-using those versions of RDoc.
-
+This command (puppet-doc) will be removed once the
+puppetlabs internal documentation processing pipeline is completely based
+on puppet-strings.
 
 OPTIONS
 -------
-* --all:
-  Output the docs for all of the reference types. In 'rdoc' mode, this also
-  outputs documentation for all resources.
 
 * --help:
   Print this help message
-
-* --outputdir:
-  Used only in 'rdoc' mode. The directory to which the rdoc output should
-  be written.
-
-* --mode:
-  Determine the output mode. Valid modes are 'text', 'pdf' and 'rdoc'. The 'pdf'
-  mode creates PDF formatted files in the /tmp directory. The default mode is
-  'text'. In 'rdoc' mode you must provide 'manifests-path'
 
 * --reference:
   Build a particular reference. Get a list of references by running
   'puppet doc --list'.
 
-* --charset:
-  Used only in 'rdoc' mode. It sets the charset used in the html files produced.
-
-* --manifestdir:
-  Used only in 'rdoc' mode. The directory to scan for stand-alone manifests.
-  If not supplied, puppet doc will use the manifestdir from puppet.conf.
-
-* --modulepath:
-  Used only in 'rdoc' mode. The directory or directories to scan for modules.
-  If not supplied, puppet doc will use the modulepath from puppet.conf.
-
-* --environment:
-  Used only in 'rdoc' mode. The configuration environment from which
-  to read the modulepath and manifestdir settings, when reading said settings
-  from puppet.conf. Due to a known bug, this option is not currently effective.
-
 
 EXAMPLE
 -------
     $ puppet doc -r type > /tmp/type_reference.markdown
-
-or
-
-    $ puppet doc --outputdir /tmp/rdoc --mode rdoc /path/to/manifests
-
-or
-
-    $ puppet doc /etc/puppet/manifests/site.pp
-
-or
-
-    $ puppet doc -m pdf -r configuration
 
 
 AUTHOR
@@ -164,16 +115,16 @@ HELP
   end
 
   def run_command
-    return[:rdoc].include?(options[:mode]) ? send(options[:mode]) : other
+    return [:rdoc].include?(options[:mode]) ? send(options[:mode]) : other
   end
 
   def rdoc
     exit_code = 0
     files = []
     unless @manifest
-      env = Puppet::Node::Environment.new
+      env = Puppet.lookup(:current_environment)
       files += env.modulepath
-      files << ::File.dirname(env[:manifest])
+      files << ::File.dirname(env.manifest) if env.manifest != Puppet::Node::Environment::NO_MANIFEST
     end
     files += command_line.args
     Puppet.info "scanning: #{files.inspect}"
@@ -235,6 +186,8 @@ HELP
     else
       setup_reference
     end
+
+    setup_logging
   end
 
   def setup_reference
@@ -249,28 +202,25 @@ HELP
     options[:references] << :type if options[:references].empty?
   end
 
-  def setup_rdoc(dummy_argument=:work_arround_for_ruby_GC_bug)
+  def setup_rdoc
     # consume the unknown options
     # and feed them as settings
     if @unknown_args.size > 0
       @unknown_args.each do |option|
         # force absolute path for modulepath when passed on commandline
-        if option[:opt]=="--modulepath" or option[:opt] == "--manifestdir"
+        if option[:opt]=="--modulepath"
           option[:arg] = option[:arg].split(::File::PATH_SEPARATOR).collect { |p| ::File.expand_path(p) }.join(::File::PATH_SEPARATOR)
         end
         Puppet.settings.handlearg(option[:opt], option[:arg])
       end
     end
+  end
 
-    # Handle the logging settings.
-    if options[:debug] or options[:verbose]
-      if options[:debug]
-        Puppet::Util::Log.level = :debug
-      else
-        Puppet::Util::Log.level = :info
-      end
+  def setup_logging
+    Puppet::Util::Log.level = :warning
 
-      Puppet::Util::Log.newdestination(:console)
-    end
+    set_log_level
+
+    Puppet::Util::Log.newdestination(:console)
   end
 end

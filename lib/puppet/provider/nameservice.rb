@@ -6,18 +6,19 @@ require 'puppet'
 class Puppet::Provider::NameService < Puppet::Provider
   class << self
     def autogen_default(param)
-      defined?(@autogen_defaults) ? @autogen_defaults[symbolize(param)] : nil
+      defined?(@autogen_defaults) ? @autogen_defaults[param.intern] : nil
     end
 
     def autogen_defaults(hash)
       @autogen_defaults ||= {}
       hash.each do |param, value|
-        @autogen_defaults[symbolize(param)] = value
+        @autogen_defaults[param.intern] = value
       end
     end
 
     def initvars
       @checks = {}
+      @options = {}
       super
     end
 
@@ -76,10 +77,9 @@ class Puppet::Provider::NameService < Puppet::Provider
     # This is annoying, but there really aren't that many options,
     # and this *is* built into Ruby.
     def section
-      unless defined?(@resource_type)
+      unless resource_type
         raise Puppet::DevError,
           "Cannot determine Etc section without a resource type"
-
       end
 
       if @resource_type.name == :group
@@ -112,7 +112,7 @@ class Puppet::Provider::NameService < Puppet::Provider
   # Autogenerate a value.  Mostly used for uid/gid, but also used heavily
   # with DirectoryServices, because DirectoryServices is stupid.
   def autogen(field)
-    field = symbolize(field)
+    field = field.intern
     id_generators = {:user => :uid, :group => :gid}
     if id_generators[@resource.class.name] == field
       return self.class.autogen_id(field, @resource.class.name)
@@ -164,12 +164,12 @@ class Puppet::Provider::NameService < Puppet::Provider
     end
 
     begin
-      execute(self.addcmd)
+      execute(self.addcmd, {:failonfail => true, :combine => true, :custom_environment => @custom_environment})
       if feature?(:manages_password_age) && (cmd = passcmd)
         execute(cmd)
       end
     rescue Puppet::ExecutionFailure => detail
-      raise Puppet::Error, "Could not create #{@resource.class.name} #{@resource.name}: #{detail}"
+      raise Puppet::Error, "Could not create #{@resource.class.name} #{@resource.name}: #{detail}", detail.backtrace
     end
   end
 
@@ -183,7 +183,7 @@ class Puppet::Provider::NameService < Puppet::Provider
     begin
       execute(self.deletecmd)
     rescue Puppet::ExecutionFailure => detail
-      raise Puppet::Error, "Could not delete #{@resource.class.name} #{@resource.name}: #{detail}"
+      raise Puppet::Error, "Could not delete #{@resource.class.name} #{@resource.name}: #{detail}", detail.backtrace
     end
   end
 
@@ -202,7 +202,23 @@ class Puppet::Provider::NameService < Puppet::Provider
 
   # Retrieve a specific value by name.
   def get(param)
-    (hash = getinfo(false)) ? hash[param] : nil
+    (hash = getinfo(false)) ? unmunge(param, hash[param]) : nil
+  end
+
+  def munge(name, value)
+    if block = self.class.option(name, :munge) and block.is_a? Proc
+      block.call(value)
+    else
+      value
+    end
+  end
+
+  def unmunge(name, value)
+    if block = self.class.option(name, :unmunge) and block.is_a? Proc
+      block.call(value)
+    else
+      value
+    end
   end
 
   # Retrieve what we can about our object
@@ -211,7 +227,7 @@ class Puppet::Provider::NameService < Puppet::Provider
       @etcmethod ||= ("get" + self.class.section.to_s + "nam").intern
       begin
         @objectinfo = Etc.send(@etcmethod, @resource[:name])
-      rescue ArgumentError => detail
+      rescue ArgumentError
         @objectinfo = nil
       end
     end
@@ -258,18 +274,18 @@ class Puppet::Provider::NameService < Puppet::Provider
 
   def initialize(resource)
     super
-
+    @custom_environment = {}
     @objectinfo = nil
   end
 
   def set(param, value)
     self.class.validate(param, value)
-    cmd = modifycmd(param, value)
+    cmd = modifycmd(param, munge(param, value))
     raise Puppet::DevError, "Nameservice command must be an array" unless cmd.is_a?(Array)
     begin
       execute(cmd)
     rescue Puppet::ExecutionFailure => detail
-      raise Puppet::Error, "Could not set #{param} on #{@resource.class.name}[#{@resource.name}]: #{detail}"
+      raise Puppet::Error, "Could not set #{param} on #{@resource.class.name}[#{@resource.name}]: #{detail}", detail.backtrace
     end
   end
 end

@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/configurer'
@@ -6,24 +6,13 @@ require 'puppet/configurer'
 describe Puppet::Configurer do
   include PuppetSpec::Files
 
-  describe "when downloading plugins" do
-    it "should use the :pluginsignore setting, split on whitespace, for ignoring remote files" do
-      resource = Puppet::Type.type(:notify).new :name => "yay"
-      Puppet::Type.type(:file).expects(:new).with { |args| args[:ignore] == Puppet[:pluginsignore].split(/\s+/) }.returns resource
-
-      configurer = Puppet::Configurer.new
-      configurer.stubs(:download_plugins?).returns true
-      configurer.download_plugins
-    end
-  end
-
   describe "when running" do
     before(:each) do
-      @catalog = Puppet::Resource::Catalog.new
+      @catalog = Puppet::Resource::Catalog.new("testing", Puppet.lookup(:environments).get(Puppet[:environment]))
       @catalog.add_resource(Puppet::Type.type(:notify).new(:title => "testing"))
 
-      # Make sure we don't try to persist the local state after the transaction ran, 
-      # because it will fail during test (the state file is in an not existing directory)
+      # Make sure we don't try to persist the local state after the transaction ran,
+      # because it will fail during test (the state file is in a not-existing directory)
       # and we need the transaction to be successful to be able to produce a summary report
       @catalog.host_config = false
 
@@ -57,21 +46,22 @@ describe Puppet::Configurer do
       @configurer.run :catalog => @catalog, :report => report
       t2 = Time.now.tv_sec
 
-      file_mode = Puppet.features.microsoft_windows? ? '100644' : '100666'
+      # sticky bit only applies to directories in windows
+      file_mode = Puppet.features.microsoft_windows? ? '666' : '100666'
 
-      File.stat(Puppet[:lastrunfile]).mode.to_s(8).should == file_mode
+      expect(Puppet::FileSystem.stat(Puppet[:lastrunfile]).mode.to_s(8)).to eq(file_mode)
 
       summary = nil
       File.open(Puppet[:lastrunfile], "r") do |fd|
         summary = YAML.load(fd.read)
       end
 
-      summary.should be_a(Hash)
+      expect(summary).to be_a(Hash)
       %w{time changes events resources}.each do |key|
-        summary.should be_key(key)
+        expect(summary).to be_key(key)
       end
-      summary["time"].should be_key("notify")
-      summary["time"]["last_run"].should be_between(t1, t2)
+      expect(summary["time"]).to be_key("notify")
+      expect(summary["time"]["last_run"]).to be_between(t1, t2)
     end
   end
 end

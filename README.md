@@ -1,43 +1,76 @@
 Puppet
 ======
 
-Puppet, an automated administrative engine for your Linux and Unix systems, performs
+[![Build Status](https://travis-ci.org/puppetlabs/puppet.png?branch=master)](https://travis-ci.org/puppetlabs/puppet)
+[![Inline docs](http://inch-ci.org/github/puppetlabs/puppet.png)](http://inch-ci.org/github/puppetlabs/puppet)
+
+Puppet, an automated administrative engine for your Linux, Unix, and Windows systems, performs
 administrative tasks (such as adding users, installing packages, and updating server
 configurations) based on a centralized specification.
 
-Documentation (and detailed installation instructions) can be found online at the
+Documentation
+-------------
+
+Documentation for Puppet and related projects can be found online at the
 [Puppet Docs site](http://docs.puppetlabs.com).
+
+HTTP API
+--------
+[HTTP API Index](api/docs/http_api_index.md)
 
 Installation
 ------------
 
-Generally, you need the following things installed:
+The best way to run Puppet is with [Puppet Enterprise](http://puppetlabs.com/puppet/puppet-enterprise),
+which also includes orchestration features, a web console, and professional support.
+[The PE documentation is available here.](http://docs.puppetlabs.com/pe/latest)
 
-* A supported Ruby version. Ruby 1.8.5, 1.8.7, and 1.9.2 are fully supported
-  (with a handful of known issues under 1.9.2); Ruby 1.8.1 is supported on a
-  best-effort basis for agent use only. Other versions of Ruby are used at your
-  own risk, and Ruby 1.8.6, 1.9.0, and 1.9.1 are not recommended for
-  compatibility reasons.
+To install an open source release of Puppet,
+[see the installation guide on the docs site.](http://docs.puppetlabs.com/guides/installation.html)
 
-* The Ruby OpenSSL library.  For some reason, this often isn't included
-  in the main ruby distributions.  You can test for it by running
-  `ruby -ropenssl -e "puts :yep"`.  If that errors out, you're missing the
-  library.
+If you need to run Puppet from source as a tester or developer,
+[see the running from source guide on the docs site.](http://docs.puppetlabs.com/guides/from_source.html)
 
-  If your distribution doesn't come with the necessary library (e.g., on Debian
-  and Ubuntu you need to install libopenssl-ruby), then you'll probably have to
-  compile Ruby yourself, since it's part of the standard library and not
-  available separately.  You could probably just compile and install that one
-  library, though.
+Developing and Contributing
+------
 
-* Facter => 2.0.0 (available via your package manager or from the [Facter site](http://puppetlabs.com/projects/facter)).
+We'd love to get contributions from you! For a quick guide to getting your
+system setup for developing take a look at our [Quickstart
+Guide](docs/quickstart.md). Once you are up and running, take a look at the
+[Contribution Documents](CONTRIBUTING.md) to see how to get your changes merged
+in.
+
+For more complete docs on developing with puppet you can take a look at the
+rest of the [developer documents](docs/index.md).
 
 License
 -------
 
-See LICENSE file.
+See [LICENSE](LICENSE) file.
 
 Support
 -------
 
-Please log tickets and issues at our [Projects site](http://projects.puppetlabs.com)
+Please log tickets and issues at our [JIRA tracker](http://tickets.puppetlabs.com).  A [mailing
+list](https://groups.google.com/forum/?fromgroups#!forum/puppet-users) is
+available for asking questions and getting help from others. In addition there
+is an active #puppet channel on Freenode.
+
+We use semantic version numbers for our releases, and recommend that users stay
+as up-to-date as possible by upgrading to patch releases and minor releases as
+they become available.
+
+Bugfixes and ongoing development will occur in minor releases for the current
+major version. Security fixes will be backported to a previous major version on
+a best-effort basis, until the previous major version is no longer maintained.
+
+
+For example: If a security vulnerability is discovered in Puppet 4.1.1, we
+would fix it in the 4 series, most likely as 4.1.2. Maintainers would then make
+a best effort to backport that fix onto the latest Puppet 3 release.
+
+Long-term support, including security patches and bug fixes, is available for
+commercial customers. Please see the following page for more details:
+
+[Puppet Enterprise Support Lifecycle](http://puppetlabs.com/misc/puppet-enterprise-lifecycle)
+

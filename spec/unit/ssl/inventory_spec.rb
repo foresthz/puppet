@@ -1,33 +1,26 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/ssl/inventory'
 
 describe Puppet::SSL::Inventory, :unless => Puppet.features.microsoft_windows? do
+  let(:cert_inventory) { File.expand_path("/inven/tory") }
   before do
     @class = Puppet::SSL::Inventory
   end
 
-  it "should use the :certinventory setting for the path to the inventory file" do
-    Puppet.settings.expects(:value).with(:cert_inventory).returns "/inven/tory"
-
-    @class.any_instance.stubs(:rebuild)
-
-    @class.new.path.should == "/inven/tory"
-  end
-
   describe "when initializing" do
     it "should set its path to the inventory file" do
-      Puppet.settings.stubs(:value).with(:cert_inventory).returns "/inven/tory"
-      @class.new.path.should == "/inven/tory"
+      Puppet[:cert_inventory] = cert_inventory
+      expect(@class.new.path).to eq(cert_inventory)
     end
   end
 
   describe "when managing an inventory" do
     before do
-      Puppet.settings.stubs(:value).with(:cert_inventory).returns "/inven/tory"
+      Puppet[:cert_inventory] = cert_inventory
 
-      FileTest.stubs(:exist?).with("/inven/tory").returns true
+      Puppet::FileSystem.stubs(:exist?).with(cert_inventory).returns true
 
       @inventory = @class.new
 
@@ -35,86 +28,51 @@ describe Puppet::SSL::Inventory, :unless => Puppet.features.microsoft_windows? d
     end
 
     describe "and creating the inventory file" do
-      before do
-        Puppet.settings.stubs(:write)
-        FileTest.stubs(:exist?).with("/inven/tory").returns false
+      it "re-adds all of the existing certificates" do
+        inventory_file = StringIO.new
+        Puppet.settings.setting(:cert_inventory).stubs(:open).yields(inventory_file)
 
-        Puppet::SSL::Certificate.indirection.stubs(:search).returns []
-      end
-
-      it "should log that it is building a new inventory file" do
-        Puppet.expects(:notice)
-
-        @inventory.rebuild
-      end
-
-      it "should use the Settings to write to the file" do
-        Puppet.settings.expects(:write).with(:cert_inventory)
-
-        @inventory.rebuild
-      end
-
-      it "should add a header to the file" do
-        fh = mock 'filehandle'
-        Puppet.settings.stubs(:write).yields fh
-        fh.expects(:print).with { |str| str =~ /^#/ }
-
-        @inventory.rebuild
-      end
-
-      it "should add formatted information on all existing certificates" do
-        cert1 = mock 'cert1'
-        cert2 = mock 'cert2'
-
+        cert1 = Puppet::SSL::Certificate.new("cert1")
+        cert1.content = stub 'cert1',
+          :serial => 2,
+          :not_before => Time.now,
+          :not_after => Time.now,
+          :subject => "/CN=smocking"
+        cert2 = Puppet::SSL::Certificate.new("cert2")
+        cert2.content = stub 'cert2',
+          :serial => 3,
+          :not_before => Time.now,
+          :not_after => Time.now,
+          :subject => "/CN=mocking bird"
         Puppet::SSL::Certificate.indirection.expects(:search).with("*").returns [cert1, cert2]
 
-        @class.any_instance.expects(:add).with(cert1)
-        @class.any_instance.expects(:add).with(cert2)
-
         @inventory.rebuild
+
+        expect(inventory_file.string).to match(/\/CN=smocking/)
+        expect(inventory_file.string).to match(/\/CN=mocking bird/)
       end
     end
 
     describe "and adding a certificate" do
-      it "should build the inventory file if one does not exist" do
-        Puppet.settings.stubs(:value).with(:cert_inventory).returns "/inven/tory"
-        Puppet.settings.stubs(:write)
-
-        FileTest.expects(:exist?).with("/inven/tory").returns false
-
-        @inventory.expects(:rebuild)
-
-        @inventory.add(@cert)
-      end
 
       it "should use the Settings to write to the file" do
-        Puppet.settings.expects(:write).with(:cert_inventory, "a")
-
-        @inventory.add(@cert)
-      end
-
-      it "should use the actual certificate if it was passed a Puppet certificate" do
-        cert = Puppet::SSL::Certificate.new("mycert")
-        cert.content = @cert
-
-        fh = stub 'filehandle', :print => nil
-        Puppet.settings.stubs(:write).yields fh
-
-        @inventory.expects(:format).with(@cert)
+        Puppet.settings.setting(:cert_inventory).expects(:open).with("a")
 
         @inventory.add(@cert)
       end
 
       it "should add formatted certificate information to the end of the file" do
-        fh = mock 'filehandle'
+        cert = Puppet::SSL::Certificate.new("mycert")
+        cert.content = @cert
 
-        Puppet.settings.stubs(:write).yields fh
+        fh = StringIO.new
+        Puppet.settings.setting(:cert_inventory).expects(:open).with("a").yields(fh)
 
         @inventory.expects(:format).with(@cert).returns "myformat"
 
-        fh.expects(:print).with("myformat")
-
         @inventory.add(@cert)
+
+        expect(fh.string).to eq("myformat")
       end
     end
 
@@ -124,55 +82,45 @@ describe Puppet::SSL::Inventory, :unless => Puppet.features.microsoft_windows? d
       end
 
       it "should print the serial number as a 4 digit hex number in the first field" do
-        @inventory.format(@cert).split[0].should == "0x000f" # 15 in hex
+        expect(@inventory.format(@cert).split[0]).to eq("0x000f") # 15 in hex
       end
 
       it "should print the not_before date in '%Y-%m-%dT%H:%M:%S%Z' format in the second field" do
         @cert.not_before.expects(:strftime).with('%Y-%m-%dT%H:%M:%S%Z').returns "before_time"
 
-        @inventory.format(@cert).split[1].should == "before_time"
+        expect(@inventory.format(@cert).split[1]).to eq("before_time")
       end
 
       it "should print the not_after date in '%Y-%m-%dT%H:%M:%S%Z' format in the third field" do
         @cert.not_after.expects(:strftime).with('%Y-%m-%dT%H:%M:%S%Z').returns "after_time"
 
-        @inventory.format(@cert).split[2].should == "after_time"
+        expect(@inventory.format(@cert).split[2]).to eq("after_time")
       end
 
       it "should print the subject in the fourth field" do
-        @inventory.format(@cert).split[3].should == "mycert"
+        expect(@inventory.format(@cert).split[3]).to eq("mycert")
       end
 
       it "should add a carriage return" do
-        @inventory.format(@cert).should =~ /\n$/
+        expect(@inventory.format(@cert)).to match(/\n$/)
       end
 
       it "should produce a line consisting of the serial number, start date, expiration date, and subject" do
         # Just make sure our serial and subject bracket the lines.
-        @inventory.format(@cert).should =~ /^0x.+mycert$/
+        expect(@inventory.format(@cert)).to match(/^0x.+mycert$/)
       end
     end
 
-    it "should be able to find a given host's serial number" do
-      @inventory.should respond_to(:serial)
-    end
-
-    describe "and finding a serial number" do
-      it "should return nil if the inventory file is missing" do
-        FileTest.expects(:exist?).with("/inven/tory").returns false
-        @inventory.serial(:whatever).should be_nil
+    describe "and finding serial numbers" do
+      it "should return an empty array if the inventory file is missing" do
+        Puppet::FileSystem.expects(:exist?).with(cert_inventory).returns false
+        expect(@inventory.serials(:whatever)).to be_empty
       end
 
-      it "should return the serial number from the line matching the provided name" do
-        File.expects(:readlines).with("/inven/tory").returns ["0x00f blah blah /CN=me\n", "0x001 blah blah /CN=you\n"]
+      it "should return the all the serial numbers from the lines matching the provided name" do
+        File.expects(:readlines).with(cert_inventory).returns ["0x00f blah blah /CN=me\n", "0x001 blah blah /CN=you\n", "0x002 blah blah /CN=me\n"]
 
-        @inventory.serial("me").should == 15
-      end
-
-      it "should return the number as an integer" do
-        File.expects(:readlines).with("/inven/tory").returns ["0x00f blah blah /CN=me\n", "0x001 blah blah /CN=you\n"]
-
-        @inventory.serial("me").should == 15
+        expect(@inventory.serials("me")).to eq([15, 2])
       end
     end
   end

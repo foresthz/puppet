@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/util/ldap/connection'
@@ -34,25 +34,25 @@ describe Puppet::Util::Ldap::Connection do
 
   describe "when creating connections" do
     it "should require the host and port" do
-      lambda { Puppet::Util::Ldap::Connection.new("myhost") }.should raise_error(ArgumentError)
+      expect { Puppet::Util::Ldap::Connection.new("myhost") }.to raise_error(ArgumentError)
     end
 
     it "should allow specification of a user and password" do
-      lambda { Puppet::Util::Ldap::Connection.new("myhost", "myport", :user => "blah", :password => "boo") }.should_not raise_error
+      expect { Puppet::Util::Ldap::Connection.new("myhost", "myport", :user => "blah", :password => "boo") }.not_to raise_error
     end
 
     it "should allow specification of ssl" do
-      lambda { Puppet::Util::Ldap::Connection.new("myhost", "myport", :ssl => :tsl) }.should_not raise_error
+      expect { Puppet::Util::Ldap::Connection.new("myhost", "myport", :ssl => :tsl) }.not_to raise_error
     end
 
     it "should support requiring a new connection" do
-      lambda { Puppet::Util::Ldap::Connection.new("myhost", "myport", :reset => true) }.should_not raise_error
+      expect { Puppet::Util::Ldap::Connection.new("myhost", "myport", :reset => true) }.not_to raise_error
     end
 
     it "should fail if ldap is unavailable" do
       Puppet.features.expects(:ldap?).returns(false)
 
-      lambda { Puppet::Util::Ldap::Connection.new("host", "port") }.should raise_error(Puppet::Error)
+      expect { Puppet::Util::Ldap::Connection.new("host", "port") }.to raise_error(Puppet::Error)
     end
 
     it "should use neither ssl nor tls by default" do
@@ -109,55 +109,51 @@ describe Puppet::Util::Ldap::Connection do
   end
 
   it "should have a class-level method for creating a default connection" do
-    Puppet::Util::Ldap::Connection.should respond_to(:instance)
+    expect(Puppet::Util::Ldap::Connection).to respond_to(:instance)
   end
 
   describe "when creating a default connection" do
-    before do
-      Puppet.settings.stubs(:value).returns "whatever"
-    end
-
     it "should use the :ldapserver setting to determine the host" do
-      Puppet.settings.expects(:value).with(:ldapserver).returns "myserv"
+      Puppet[:ldapserver] = "myserv"
       Puppet::Util::Ldap::Connection.expects(:new).with { |host, port, options| host == "myserv" }
       Puppet::Util::Ldap::Connection.instance
     end
 
     it "should use the :ldapport setting to determine the port" do
-      Puppet.settings.expects(:value).with(:ldapport).returns "456"
+      Puppet[:ldapport] = "456"
       Puppet::Util::Ldap::Connection.expects(:new).with { |host, port, options| port == "456" }
       Puppet::Util::Ldap::Connection.instance
     end
 
     it "should set ssl to :tls if tls is enabled" do
-      Puppet.settings.expects(:value).with(:ldaptls).returns true
+      Puppet[:ldaptls] = true
       Puppet::Util::Ldap::Connection.expects(:new).with { |host, port, options| options[:ssl] == :tls }
       Puppet::Util::Ldap::Connection.instance
     end
 
     it "should set ssl to 'true' if ssl is enabled and tls is not" do
-      Puppet.settings.expects(:value).with(:ldaptls).returns false
-      Puppet.settings.expects(:value).with(:ldapssl).returns true
+      Puppet[:ldaptls] = false
+      Puppet[:ldapssl] = true
       Puppet::Util::Ldap::Connection.expects(:new).with { |host, port, options| options[:ssl] == true }
       Puppet::Util::Ldap::Connection.instance
     end
 
     it "should set ssl to false if neither ssl nor tls are enabled" do
-      Puppet.settings.expects(:value).with(:ldaptls).returns false
-      Puppet.settings.expects(:value).with(:ldapssl).returns false
+      Puppet[:ldaptls] = false
+      Puppet[:ldapssl] = false
       Puppet::Util::Ldap::Connection.expects(:new).with { |host, port, options| options[:ssl] == false }
       Puppet::Util::Ldap::Connection.instance
     end
 
     it "should set the ldapuser if one is set" do
-      Puppet.settings.expects(:value).with(:ldapuser).returns "foo"
+      Puppet[:ldapuser] = "foo"
       Puppet::Util::Ldap::Connection.expects(:new).with { |host, port, options| options[:user] == "foo" }
       Puppet::Util::Ldap::Connection.instance
     end
 
     it "should set the ldapuser and ldappassword if both is set" do
-      Puppet.settings.expects(:value).with(:ldapuser).returns "foo"
-      Puppet.settings.expects(:value).with(:ldappassword).returns "bar"
+      Puppet[:ldapuser] = "foo"
+      Puppet[:ldappassword] = "bar"
       Puppet::Util::Ldap::Connection.expects(:new).with { |host, port, options| options[:user] == "foo" and options[:password] == "bar" }
       Puppet::Util::Ldap::Connection.instance
     end

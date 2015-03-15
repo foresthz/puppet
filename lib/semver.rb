@@ -2,7 +2,6 @@ require 'puppet/util/monkey_patches'
 
 # We need to subclass Numeric to force range comparisons not to try to iterate over SemVer
 # and instead use numeric comparisons (eg >, <, >=, <=)
-# Ruby 1.8 already did this for all ranges, but Ruby 1.9 changed range include behavior
 class SemVer < Numeric
   include Comparable
 
@@ -119,6 +118,6 @@ class SemVer < Numeric
   MIN.instance_variable_set(:@vstring, 'vMIN')
 
   MAX = SemVer.new('8.0.0')
-  MAX.instance_variable_set(:@major, (1.0/0)) # => Infinity
+  MAX.instance_variable_set(:@major, Float::INFINITY) # => Infinity
   MAX.instance_variable_set(:@vstring, 'vMAX')
 end

@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 describe "the template function" do
@@ -6,40 +6,11 @@ describe "the template function" do
     Puppet::Parser::Functions.autoloader.loadall
   end
 
-  let :scope do Puppet::Parser::Scope.new end
+  let :node     do Puppet::Node.new('localhost') end
+  let :compiler do Puppet::Parser::Compiler.new(node) end
+  let :scope    do Puppet::Parser::Scope.new(compiler) end
 
-  it "should exist" do
-    Puppet::Parser::Functions.function("template").should == "function_template"
-  end
-
-  it "should create a TemplateWrapper when called" do
-    tw = stub_everything 'template_wrapper'
-
-    Puppet::Parser::TemplateWrapper.expects(:new).returns(tw)
-
-    scope.function_template(["test"])
-  end
-
-  it "should give the template filename to the TemplateWrapper" do
-    tw = stub_everything 'template_wrapper'
-    Puppet::Parser::TemplateWrapper.stubs(:new).returns(tw)
-
-    tw.expects(:file=).with("test")
-
-    scope.function_template(["test"])
-  end
-
-  it "should return what TemplateWrapper.result returns" do
-    tw = stub_everything 'template_wrapper'
-    Puppet::Parser::TemplateWrapper.stubs(:new).returns(tw)
-    tw.stubs(:file=).with("test")
-
-    tw.expects(:result).returns("template contents evaluated")
-
-    scope.function_template(["test"]).should == "template contents evaluated"
-  end
-
-  it "should concatenate template wrapper outputs for multiple templates" do
+  it "concatenates outputs for multiple templates" do
     tw1 = stub_everything "template_wrapper1"
     tw2 = stub_everything "template_wrapper2"
     Puppet::Parser::TemplateWrapper.stubs(:new).returns(tw1,tw2)
@@ -48,50 +19,71 @@ describe "the template function" do
     tw1.stubs(:result).returns("result1")
     tw2.stubs(:result).returns("result2")
 
-    scope.function_template(["1","2"]).should == "result1result2"
+    expect(scope.function_template(["1","2"])).to eq("result1result2")
   end
 
-  it "should raise an error if the template raises an error" do
+  it "raises an error if the template raises an error" do
     tw = stub_everything 'template_wrapper'
     Puppet::Parser::TemplateWrapper.stubs(:new).returns(tw)
     tw.stubs(:result).raises
 
-    expect { scope.function_template(["1"]) }.should raise_error(Puppet::ParseError)
+    expect {
+      scope.function_template(["1"])
+    }.to raise_error(Puppet::ParseError, /Failed to parse template/)
   end
 
-  def eval_template(content, *rest)
+  context "when accessing scope variables via method calls (deprecated)" do
+    it "raises an error when accessing an undefined variable" do
+      expect {
+        eval_template("template <%= deprecated %>")
+      }.to raise_error(Puppet::ParseError, /undefined local variable or method `deprecated'/)
+    end
+
+    it "looks up the value from the scope" do
+      scope["deprecated"] = "deprecated value"
+      expect { eval_template("template <%= deprecated %>")}.to raise_error(/undefined local variable or method `deprecated'/)
+    end
+
+    it "still has access to Kernel methods" do
+      expect { eval_template("<%= binding %>") }.to_not raise_error
+    end
+  end
+
+  context "when accessing scope variables as instance variables" do
+    it "has access to values" do
+      scope['scope_var'] = "value"
+      expect(eval_template("<%= @scope_var %>")).to eq("value")
+    end
+
+    it "get nil accessing a variable that does not exist" do
+      expect(eval_template("<%= @not_defined.nil? %>")).to eq("true")
+    end
+
+    it "get nil accessing a variable that is undef" do
+      scope['undef_var'] = :undef
+      expect(eval_template("<%= @undef_var.nil? %>")).to eq("true")
+    end
+  end
+
+  it "is not interfered with by having a variable named 'string' (#14093)" do
+    scope['string'] = "this output should not be seen"
+    expect(eval_template("some text that is static")).to eq("some text that is static")
+  end
+
+  it "has access to a variable named 'string' (#14093)" do
+    scope['string'] = "the string value"
+    expect(eval_template("string was: <%= @string %>")).to eq("string was: the string value")
+  end
+
+  it "does not have direct access to Scope#lookupvar" do
+    expect {
+      eval_template("<%= lookupvar('myvar') %>")
+    }.to raise_error(Puppet::ParseError, /undefined method `lookupvar'/)
+  end
+
+  def eval_template(content)
     File.stubs(:read).with("template").returns(content)
     Puppet::Parser::Files.stubs(:find_template).returns("template")
-    scope.compiler.stubs(:environment).returns("production")
-    scope.function_template(['template'] + rest)
-  end
-
-  it "should handle legacy template variable access correctly" do
-    expect { eval_template("template <%= deprecated %>") }.
-      to raise_error Puppet::ParseError
-  end
-
-  it "should get values from the scope correctly" do
-    scope["deprecated"] = "deprecated value"
-    eval_template("template <%= deprecated %>").should == "template deprecated value"
-  end
-
-  it "should handle kernel shadows without raising" do
-    expect { eval_template("<%= binding %>") }.should_not raise_error
-  end
-
-  it "should not see scopes" do
-    scope['myvar'] = 'this is yayness'
-    expect { eval_template("<%= lookupvar('myvar') %>") }.
-      to raise_error Puppet::ParseError
-  end
-
-  { "" => "", false => "false", true => "true" }.each do |input, output|
-    it "should support defined variables (#{input.inspect} => #{output.inspect})" do
-      scope['yayness'] = input
-      expect {
-        eval_template("<%= @yayness %>").should == output
-      }.should_not raise_error
-    end
+    scope.function_template(['template'])
   end
 end

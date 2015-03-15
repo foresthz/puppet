@@ -2,20 +2,29 @@ require 'puppet'
 require 'puppet/util/classgen'
 require 'puppet/node/environment'
 
-# Methods dealing with Type management.  This module gets included into the
-# Puppet::Type class, it's just split out here for clarity.
+# This module defines methods dealing with Type management.
+# This module gets included into the Puppet::Type class, it's just split out here for clarity.
+# @api public
+#
 module Puppet::MetaType
 module Manager
   include Puppet::Util::ClassGen
 
-  # remove all type instances; this is mostly only useful for testing
+  # An implementation specific method that removes all type instances during testing.
+  # @note Only use this method for testing purposes.
+  # @api private
+  #
   def allclear
     @types.each { |name, type|
       type.clear
     }
   end
 
-  # iterate across all of the subclasses of Type
+  # Iterates over all already loaded Type subclasses.
+  # @yield [t] a block receiving each type
+  # @yieldparam t [Puppet::Type] each defined type
+  # @yieldreturn [Object] the last returned object is also returned from this method
+  # @return [Object] the last returned value from the block.
   def eachtype
     @types.each do |name, type|
       # Only consider types that have names
@@ -25,22 +34,40 @@ module Manager
     end
   end
 
-  # Load all types.  Only currently used for documentation.
+  # Loads all types.
+  # @note Should only be used for purposes such as generating documentation as this is potentially a very
+  #  expensive operation.
+  # @return [void]
+  #
   def loadall
     typeloader.loadall
   end
 
-  # Define a new type.
+  # Defines a new type or redefines an existing type with the given name.
+  # A convenience method on the form `new<name>` where name is the name of the type is also created.
+  # (If this generated method happens to clash with an existing method, a warning is issued and the original
+  # method is kept).
+  #
+  # @param name [String] the name of the type to create or redefine.
+  # @param options [Hash] options passed on to {Puppet::Util::ClassGen#genclass} as the option `:attributes`.
+  # @option options [Puppet::Type]
+  #   Puppet::Type. This option is not passed on as an attribute to genclass.
+  # @yield [ ] a block evaluated in the context of the created class, thus allowing further detailing of
+  #   that class.
+  # @return [Class<inherits Puppet::Type>] the created subclass
+  # @see Puppet::Util::ClassGen.genclass
+  #
+  # @dsl type
+  # @api public
   def newtype(name, options = {}, &block)
     # Handle backward compatibility
     unless options.is_a?(Hash)
       Puppet.warning "Puppet::Type.newtype(#{name}) now expects a hash as the second argument, not #{options.inspect}"
-      options = {:parent => options}
     end
 
     # First make sure we don't have a method sitting around
-    name = symbolize(name)
-    newmethod = "new#{name.to_s}"
+    name = name.intern
+    newmethod = "new#{name}"
 
     # Used for method manipulation.
     selfobj = singleton_class
@@ -56,15 +83,11 @@ module Manager
 
     options = symbolize_options(options)
 
-    if parent = options[:parent]
-      options.delete(:parent)
-    end
-
     # Then create the class.
 
     klass = genclass(
       name,
-      :parent => (parent || Puppet::Type),
+      :parent => Puppet::Type,
       :overwrite => true,
       :hash => @types,
       :attributes => options,
@@ -90,42 +113,62 @@ module Manager
     klass.providerloader = Puppet::Util::Autoload.new(klass, "puppet/provider/#{klass.name.to_s}")
 
     # We have to load everything so that we can figure out the default provider.
-    klass.providerloader.loadall
+    klass.providerloader.loadall Puppet.lookup(:current_environment)
     klass.providify unless klass.providers.empty?
 
     klass
   end
 
-  # Remove an existing defined type.  Largely used for testing.
+  # Removes an existing type.
+  # @note Only use this for testing.
+  # @api private
   def rmtype(name)
     # Then create the class.
 
-    klass = rmclass(name, :hash => @types)
+    rmclass(name, :hash => @types)
 
     singleton_class.send(:remove_method, "new#{name}") if respond_to?("new#{name}")
   end
 
-  # Return a Type instance by name.
+  # Returns a Type instance by name.
+  # This will load the type if not already defined.
+  # @param [String, Symbol] name of the wanted Type
+  # @return [Puppet::Type, nil] the type or nil if the type was not defined and could not be loaded
+  #
   def type(name)
+    # Avoid loading if name obviously is not a type name
+    if name.to_s.include?(':')
+      return nil
+    end
+
     @types ||= {}
 
-    name = name.to_s.downcase.to_sym
+    # We are overwhelmingly symbols here, which usually match, so it is worth
+    # having this special-case to return quickly.  Like, 25K symbols vs. 300
+    # strings in this method. --daniel 2012-07-17
+    return @types[name] if @types[name]
 
-    if t = @types[name]
-      return t
-    else
-      if typeloader.load(name, env = Puppet::Node::Environment.current)
-        Puppet.warning "Loaded puppet/type/#{name} but no class was created" unless @types.include? name
-      end
-
-      return @types[name]
+    # Try mangling the name, if it is a string.
+    if name.is_a? String
+      name = name.downcase.intern
+      return @types[name] if @types[name]
     end
+    # Try loading the type.
+    if typeloader.load(name, Puppet.lookup(:current_environment))
+      Puppet.warning "Loaded puppet/type/#{name} but no class was created" unless @types.include? name
+    end
+
+    # ...and I guess that is that, eh.
+    return @types[name]
   end
 
-  # Create a loader for Puppet types.
+  # Creates a loader for Puppet types.
+  # Defaults to an instance of {Puppet::Util::Autoload} if no other auto loader has been set.
+  # @return [Puppet::Util::Autoload] the loader to use.
+  # @api private
   def typeloader
     unless defined?(@typeloader)
-      @typeloader = Puppet::Util::Autoload.new(self, "puppet/type", :wrap => false)
+      @typeloader = Puppet::Util::Autoload.new(self, "puppet/type")
     end
 
     @typeloader

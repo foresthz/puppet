@@ -1,46 +1,41 @@
-begin test_name "puppet module install (nonexistent directory)"
+test_name "puppet module install (nonexistent directory)"
+require 'puppet/acceptance/module_utils'
+extend Puppet::Acceptance::ModuleUtils
+
+hosts.each do |host|
+  skip_test "skip tests requiring forge certs on solaris and aix" if host['platform'] =~ /solaris/
+end
+
+module_author = "pmtacceptance"
+module_name   = "nginx"
+module_dependencies = []
+
+default_moduledir = get_default_modulepath_for_host(master)
+
+orig_installed_modules = get_installed_modules_for_hosts hosts
+teardown do
+  on master, "mv #{default_moduledir}-bak #{default_moduledir}", :acceptable_exit_codes => [0, 1]
+  rm_installed_modules_from_hosts orig_installed_modules, (get_installed_modules_for_hosts hosts)
+end
 
 step 'Setup'
-require 'resolv'; ip = Resolv.getaddress('forge-dev.puppetlabs.lan')
-apply_manifest_on master, "host { 'forge.puppetlabs.com': ip => '#{ip}' }"
-apply_manifest_on master, "file { ['/etc/puppet/modules', '/usr/share/puppet/modules']: ensure => directory, recurse => true, purge => true, force => true }"
+
+stub_forge_on(master)
+
 apply_manifest_on master, <<-PP
-file {
-  [
-    '/etc/puppet/modules',
-    '/tmp/modules',
-  ]: ensure => absent, recurse => true, force => true;
-}
+  file { '/tmp/modules': ensure => absent, recurse => true, force => true }
 PP
 
 step "Try to install a module to a non-existent directory"
-on master, puppet("module install pmtacceptance-nginx --target-dir /tmp/modules") do
-  assert_output <<-OUTPUT
-    Preparing to install into /tmp/modules ...
-    Created target directory /tmp/modules
-    Downloading from http://forge.puppetlabs.com ...
-    Installing -- do not interrupt ...
-    /tmp/modules
-    └── pmtacceptance-nginx (\e[0;36mv0.0.1\e[0m)
-  OUTPUT
+on master, puppet("module install #{module_author}-#{module_name} --target-dir /tmp/modules") do
+  assert_module_installed_ui(stdout, module_author, module_name)
 end
-on master, '[ -d /tmp/modules/nginx ]'
+assert_module_installed_on_disk(master, module_name, '/tmp/modules')
 
 step "Try to install a module to a non-existent implicit directory"
-on master, puppet("module install pmtacceptance-nginx") do
-  assert_output <<-OUTPUT
-    Preparing to install into /etc/puppet/modules ...
-    Created target directory /etc/puppet/modules
-    Downloading from http://forge.puppetlabs.com ...
-    Installing -- do not interrupt ...
-    /etc/puppet/modules
-    └── pmtacceptance-nginx (\e[0;36mv0.0.1\e[0m)
-  OUTPUT
+# This test relies on destroying the default module directory...
+on master, "mv #{default_moduledir} #{default_moduledir}-bak"
+on master, puppet("module install #{module_author}-#{module_name}") do
+  assert_module_installed_ui(stdout, module_author, module_name)
 end
-on master, '[ -d /etc/puppet/modules/nginx ]'
-
-ensure step "Teardown"
-apply_manifest_on master, "host { 'forge.puppetlabs.com': ensure => absent }"
-apply_manifest_on master, "file { '/etc/puppet/modules': ensure => directory }"
-apply_manifest_on master, "file { '/etc/puppet/modules': recurse => true, purge => true, force => true }"
-end
+assert_module_installed_on_disk(master, module_name, default_moduledir)

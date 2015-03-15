@@ -31,7 +31,7 @@ module Puppet::Util::POSIX
 
     begin
       return Etc.send(method, id).send(field)
-    rescue ArgumentError => detail
+    rescue NoMethodError, ArgumentError
       # ignore it; we couldn't find the object
       return nil
     end
@@ -70,7 +70,7 @@ module Puppet::Util::POSIX
 
   # Determine what the field name is for users and groups.
   def idfield(space)
-    case Puppet::Util.symbolize(space)
+    case space.intern
     when :gr, :group; return :gid
     when :pw, :user, :passwd; return :uid
     else
@@ -80,7 +80,7 @@ module Puppet::Util::POSIX
 
   # Determine what the method is to get users and groups by id
   def methodbyid(space)
-    case Puppet::Util.symbolize(space)
+    case space.intern
     when :gr, :group; return :getgrgid
     when :pw, :user, :passwd; return :getpwuid
     else
@@ -90,7 +90,7 @@ module Puppet::Util::POSIX
 
   # Determine what the method is to get users and groups by name
   def methodbyname(space)
-    case Puppet::Util.symbolize(space)
+    case space.intern
     when :gr, :group; return :getgrnam
     when :pw, :user, :passwd; return :getpwnam
     else
@@ -98,49 +98,39 @@ module Puppet::Util::POSIX
     end
   end
 
-  # Get the GID of a given group, provided either a GID or a name
+  # Get the GID
   def gid(group)
-    begin
-      group = Integer(group)
-    rescue ArgumentError
-      # pass
-    end
-    if group.is_a?(Integer)
-      return nil unless name = get_posix_field(:group, :name, group)
-      gid = get_posix_field(:group, :gid, name)
-      check_value = gid
-    else
-      return nil unless gid = get_posix_field(:group, :gid, group)
-      name = get_posix_field(:group, :name, gid)
-      check_value = name
-    end
-    if check_value != group
-      return search_posix_field(:group, :gid, group)
-    else
-      return gid
-    end
+      get_posix_value(:group, :gid, group)
   end
 
-  # Get the UID of a given user, whether a UID or name is provided
+  # Get the UID
   def uid(user)
+      get_posix_value(:passwd, :uid, user)
+  end
+
+  private
+
+  # Get the specified id_field of a given field (user or group), 
+  # whether an ID name is provided
+  def get_posix_value(location, id_field, field)
     begin
-      user = Integer(user)
+      field = Integer(field)
     rescue ArgumentError
       # pass
     end
-    if user.is_a?(Integer)
-      return nil unless name = get_posix_field(:passwd, :name, user)
-      uid = get_posix_field(:passwd, :uid, name)
-      check_value = uid
+    if field.is_a?(Integer)
+      return nil unless name = get_posix_field(location, :name, field)
+      id = get_posix_field(location, id_field, name)
+      check_value = id
     else
-      return nil unless uid = get_posix_field(:passwd, :uid, user)
-      name = get_posix_field(:passwd, :name, uid)
+      return nil unless id = get_posix_field(location, id_field, field)
+      name = get_posix_field(location, :name, id)
       check_value = name
     end
-    if check_value != user
-      return search_posix_field(:passwd, :uid, user)
+    if check_value != field
+      return search_posix_field(location, id_field, field)
     else
-      return uid
+      return id
     end
   end
 end

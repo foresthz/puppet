@@ -1,15 +1,31 @@
-begin test_name "puppet module install (with unsatisfied constraints)"
+test_name "puppet module install (with unsatisfied constraints)"
+require 'puppet/acceptance/module_utils'
+extend Puppet::Acceptance::ModuleUtils
+
+hosts.each do |host|
+  skip_test "skip tests requiring forge certs on solaris and aix" if host['platform'] =~ /solaris/
+end
+
+module_author = "pmtacceptance"
+module_name   = "git"
+module_reference = "#{module_author}-#{module_name}"
+module_dependencies = []
+
+orig_installed_modules = get_installed_modules_for_hosts hosts
+teardown do
+  rm_installed_modules_from_hosts orig_installed_modules, (get_installed_modules_for_hosts hosts)
+end
 
 step 'Setup'
-require 'resolv'; ip = Resolv.getaddress('forge-dev.puppetlabs.lan')
-apply_manifest_on master, "host { 'forge.puppetlabs.com': ip => '#{ip}' }"
-apply_manifest_on master, "file { ['/etc/puppet/modules', '/usr/share/puppet/modules']: ensure => directory, recurse => true, purge => true, force => true }"
+
+stub_forge_on(master)
+
 apply_manifest_on master, <<-PP
 file {
   [
-    '/etc/puppet/modules/crakorn',
+    '#{master['distmoduledir']}/crakorn',
   ]: ensure => directory;
-  '/etc/puppet/modules/crakorn/metadata.json':
+  '#{master['distmoduledir']}/crakorn/metadata.json':
     content => '{
       "name": "jimmy/crakorn",
       "version": "0.0.1",
@@ -17,81 +33,44 @@ file {
       "author": "jimmy",
       "license": "MIT",
       "dependencies": [
-        { "name": "pmtacceptance/stdlib", "version_requirement": "1.x" }
+        { "name": "#{module_author}/stdlub", "version_requirement": "1.x" }
       ]
     }';
 }
 PP
 
 step "Try to install a module that has an unsatisfiable dependency"
-on master, puppet("module install pmtacceptance-git"), :acceptable_exit_codes => [1] do
-  assert_output <<-OUTPUT
-    STDOUT> Preparing to install into /etc/puppet/modules ...
-    STDOUT> Downloading from http://forge.puppetlabs.com ...
-    STDERR> \e[1;31mError: Could not install module 'pmtacceptance-git' (latest: v0.0.1)
-    STDERR>   No version of 'pmtacceptance-stdlib' will satisfy dependencies
-    STDERR>     'jimmy-crakorn' (v0.0.1) requires 'pmtacceptance-stdlib' (v1.x)
-    STDERR>     'pmtacceptance-git' (v0.0.1) requires 'pmtacceptance-stdlib' (>= 2.0.0)
-    STDERR>     Use `puppet module install --ignore-dependencies` to install only this module\e[0m
-  OUTPUT
+on master, puppet("module install #{module_author}-#{module_name}"), :acceptable_exit_codes => [1] do
+  assert_match(/No version.*can satisfy all dependencies/, stderr,
+        "Unsatisfiable dependency error was not displayed")
+  assert_match(/Use `puppet module install --ignore-dependencies/, stderr,
+        "Use --ignore-dependencies error was not displayed")
 end
-on master, '[ ! -d /etc/puppet/modules/git ]'
+assert_module_not_installed_on_disk(master, module_name)
 
+# FIXME I don't understand what behaviour this looking for?
 step "Install the module with an unsatisfiable dependency"
-on master, puppet("module install pmtacceptance-git --ignore-dependencies") do
-  assert_output <<-OUTPUT
-    Preparing to install into /etc/puppet/modules ...
-    Downloading from http://forge.puppetlabs.com ...
-    Installing -- do not interrupt ...
-    /etc/puppet/modules
-    └── pmtacceptance-git (\e[0;36mv0.0.1\e[0m)
-  OUTPUT
+on master, puppet("module install #{module_author}-#{module_name} --ignore-dependencies") do
+  assert_module_installed_ui(stdout, module_author, module_name)
 end
-on master, '[ -d /etc/puppet/modules/git ]'
+assert_module_installed_on_disk(master, module_name)
 
 step "Try to install a specific version of the unsatisfiable dependency"
-on master, puppet("module install pmtacceptance-stdlib --version 1.x"), :acceptable_exit_codes => [1] do
-  assert_output <<-OUTPUT
-    STDOUT> Preparing to install into /etc/puppet/modules ...
-    STDOUT> Downloading from http://forge.puppetlabs.com ...
-    STDERR> \e[1;31mError: Could not install module 'pmtacceptance-stdlib' (v1.x)
-    STDERR>   No version of 'pmtacceptance-stdlib' will satisfy dependencies
-    STDERR>     You specified 'pmtacceptance-stdlib' (v1.x)
-    STDERR>     'jimmy-crakorn' (v0.0.1) requires 'pmtacceptance-stdlib' (v1.x)
-    STDERR>     'pmtacceptance-git' (v0.0.1) requires 'pmtacceptance-stdlib' (>= 2.0.0)
-    STDERR>     Use `puppet module install --force` to install this module anyway\e[0m
-  OUTPUT
+on master, puppet("module install #{module_author}-stdlub --version 1.x"), :acceptable_exit_codes => [1] do
+  assert_match(/No version.* can satisfy all dependencies/, stderr,
+        "Unsatisfiable dependency was not displayed")
 end
-on master, '[ ! -d /etc/puppet/modules/stdlib ]'
+assert_module_not_installed_on_disk(master, 'stdlub')
 
 step "Try to install any version of the unsatisfiable dependency"
-on master, puppet("module install pmtacceptance-stdlib"), :acceptable_exit_codes => [1] do
-  assert_output <<-OUTPUT
-    STDOUT> Preparing to install into /etc/puppet/modules ...
-    STDOUT> Downloading from http://forge.puppetlabs.com ...
-    STDERR> \e[1;31mError: Could not install module 'pmtacceptance-stdlib' (best: v1.0.0)
-    STDERR>   No version of 'pmtacceptance-stdlib' will satisfy dependencies
-    STDERR>     You specified 'pmtacceptance-stdlib' (best: v1.0.0)
-    STDERR>     'jimmy-crakorn' (v0.0.1) requires 'pmtacceptance-stdlib' (v1.x)
-    STDERR>     'pmtacceptance-git' (v0.0.1) requires 'pmtacceptance-stdlib' (>= 2.0.0)
-    STDERR>     Use `puppet module install --force` to install this module anyway\e[0m
-  OUTPUT
+on master, puppet("module install #{module_author}-stdlub"), :acceptable_exit_codes => [1] do
+  assert_match(/No version.* can satisfy all dependencies/, stderr,
+        "Unsatisfiable dependency was not displayed")
 end
-on master, '[ ! -d /etc/puppet/modules/stdlib ]'
+assert_module_not_installed_on_disk(master, 'stdlub')
 
 step "Install the unsatisfiable dependency with --force"
-on master, puppet("module install pmtacceptance-stdlib --force") do
-  assert_output <<-OUTPUT
-    Preparing to install into /etc/puppet/modules ...
-    Downloading from http://forge.puppetlabs.com ...
-    Installing -- do not interrupt ...
-    /etc/puppet/modules
-    └── pmtacceptance-stdlib (\e[0;36mv1.0.0\e[0m)
-  OUTPUT
+on master, puppet("module install #{module_author}-stdlub --force") do
+  assert_module_installed_ui(stdout, module_author, 'stdlub')
 end
-on master, '[ -d /etc/puppet/modules/stdlib ]'
-
-ensure step "Teardown"
-apply_manifest_on master, "host { 'forge.puppetlabs.com': ensure => absent }"
-apply_manifest_on master, "file { '/etc/puppet/modules': recurse => true, purge => true, force => true }"
-end
+assert_module_installed_on_disk(master, 'stdlub')

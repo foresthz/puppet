@@ -1,9 +1,10 @@
 require 'etc'
 require 'facter'
 require 'puppet/property/keyvalue'
+require 'puppet/parameter/boolean'
 
 module Puppet
-  newtype(:group) do
+  Type.newtype(:group) do
     @doc = "Manage groups. On most platforms this can only create groups.
       Group membership must be managed on individual users.
 
@@ -20,6 +21,10 @@ module Puppet
 
     feature :system_groups,
       "The provider allows you to create system groups with lower GIDs."
+
+    feature :libuser,
+      "Allows local groups to be managed on systems that also use some other
+       remote NSS method of managing accounts."
 
     ensurable do
       desc "Create or remove the group."
@@ -82,11 +87,29 @@ module Puppet
         newvalue = newvalue.join(",")
         super(currentvalue, newvalue)
       end
+
+      def insync?(current)
+        if provider.respond_to?(:members_insync?)
+          return provider.members_insync?(current, @should)
+        end
+
+        super(current)
+      end
+
+      def is_to_s(currentvalue)
+        if provider.respond_to?(:members_to_s)
+          currentvalue = '' if currentvalue.nil?
+          return provider.members_to_s(currentvalue.split(','))
+        end
+
+        super(currentvalue)
+      end
+      alias :should_to_s :is_to_s
     end
 
-    newparam(:auth_membership) do
+    newparam(:auth_membership, :boolean => true, :parent => Puppet::Parameter::Boolean) do
       desc "whether the provider is authoritative for group membership."
-      defaultto true
+      defaultto false
     end
 
     newparam(:name) do
@@ -100,10 +123,8 @@ module Puppet
       isnamevar
     end
 
-    newparam(:allowdupe, :boolean => true) do
+    newparam(:allowdupe, :boolean => true, :parent => Puppet::Parameter::Boolean) do
       desc "Whether to allow duplicate GIDs. Defaults to `false`."
-
-      newvalues(:true, :false)
 
       defaultto false
     end
@@ -138,12 +159,30 @@ module Puppet
       defaultto :minimum
     end
 
-    newparam(:system, :boolean => true) do
+    newparam(:system, :boolean => true, :parent => Puppet::Parameter::Boolean) do
       desc "Whether the group is a system group with lower GID."
 
-      newvalues(:true, :false)
-
       defaultto false
+    end
+
+    newparam(:forcelocal, :boolean => true,
+             :required_features => :libuser,
+             :parent => Puppet::Parameter::Boolean) do
+      desc "Forces the management of local accounts when accounts are also
+            being managed by some other NSS"
+      defaultto false
+    end
+
+    # This method has been exposed for puppet to manage users and groups of
+    # files in its settings and should not be considered available outside of
+    # puppet.
+    #
+    # (see Puppet::Settings#service_group_available?)
+    #
+    # @return [Boolean] if the group exists on the system
+    # @api private
+    def exists?
+      provider.exists?
     end
   end
 end

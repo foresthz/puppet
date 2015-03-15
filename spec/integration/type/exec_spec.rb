@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet_spec/files'
@@ -20,7 +20,7 @@ describe Puppet::Type.type(:exec) do
     catalog.add_resource exec
     catalog.apply
 
-    File.read(path).should == 'foo'
+    expect(File.read(path)).to eq('foo')
   end
 
   it "should not execute the command if onlyif returns non-zero" do
@@ -33,7 +33,7 @@ describe Puppet::Type.type(:exec) do
     catalog.add_resource exec
     catalog.apply
 
-    File.should_not be_exist(path)
+    expect(Puppet::FileSystem.exist?(path)).to be_falsey
   end
 
   it "should execute the command if onlyif returns zero" do
@@ -46,7 +46,7 @@ describe Puppet::Type.type(:exec) do
     catalog.add_resource exec
     catalog.apply
 
-    File.read(path).should == 'foo'
+    expect(File.read(path)).to eq('foo')
   end
 
   it "should execute the command if unless returns non-zero" do
@@ -59,7 +59,7 @@ describe Puppet::Type.type(:exec) do
     catalog.add_resource exec
     catalog.apply
 
-    File.read(path).should == 'foo'
+    expect(File.read(path)).to eq('foo')
   end
 
   it "should not execute the command if unless returns zero" do
@@ -72,6 +72,6 @@ describe Puppet::Type.type(:exec) do
     catalog.add_resource exec
     catalog.apply
 
-    File.should_not be_exist(path)
+    expect(Puppet::FileSystem.exist?(path)).to be_falsey
   end
 end

@@ -29,20 +29,12 @@ Puppet::Type.newtype(:component) do
   def initialize(*args)
     @extra_parameters = {}
     super
-
-    catalog.alias(self, ref) if catalog and ! catalog.resource(ref)
   end
 
   # Component paths are special because they function as containers.
   def pathbuilder
     if reference.type == "Class"
-      # 'main' is the top class, so we want to see '//' instead of
-      # its name.
-      if reference.title.to_s.downcase == "main"
-        myname = ""
-      else
-        myname = reference.title
-      end
+      myname = reference.title
     else
       myname = reference.to_s
     end

@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 zfs = Puppet::Type.type(:zfs)
@@ -8,7 +8,7 @@ describe zfs do
 
   properties.each do |property|
     it "should have a #{property} property" do
-      zfs.attrclass(property).ancestors.should be_include(Puppet::Property)
+      expect(zfs.attrclass(property).ancestors).to be_include(Puppet::Property)
     end
   end
 
@@ -16,16 +16,18 @@ describe zfs do
 
   parameters.each do |parameter|
     it "should have a #{parameter} parameter" do
-      zfs.attrclass(parameter).ancestors.should be_include(Puppet::Parameter)
+      expect(zfs.attrclass(parameter).ancestors).to be_include(Puppet::Parameter)
     end
   end
 
-  it "should autorequire the containing zfss and the zpool" do
-    provider = mock "provider"
-    provider.stubs(:name).returns(:solaris)
-    zfs.stubs(:defaultprovider).returns(provider)
-    Puppet::Type.type(:zpool).stubs(:defaultprovider).returns(provider)
+  it "should autorequire the containing zfs and the zpool" do
+    zfs_provider = mock "provider"
+    zfs_provider.stubs(:name).returns(:zfs)
+    zfs.stubs(:defaultprovider).returns(zfs_provider)
 
+    zpool_provider = mock "provider"
+    zpool_provider.stubs(:name).returns(:zpool)
+    Puppet::Type.type(:zpool).stubs(:defaultprovider).returns(zpool_provider)
 
     foo_pool = Puppet::Type.type(:zpool).new(:name => "foo")
 
@@ -39,6 +41,6 @@ describe zfs do
 
     req = foo_bar_baz_buz_zfs.autorequire.collect { |edge| edge.source.ref }
 
-    [foo_pool.ref, foo_bar_zfs.ref, foo_bar_baz_zfs.ref].each { |ref| req.include?(ref).should == true }
+    [foo_pool.ref, foo_bar_zfs.ref, foo_bar_baz_zfs.ref].each { |ref| expect(req.include?(ref)).to eq(true) }
   end
 end

@@ -42,14 +42,14 @@ module Puppet::Util::FileParsing
     # Customize this so we can do a bit of validation.
     def fields=(fields)
       @fields = fields.collect do |field|
-        r = symbolize(field)
+        r = field.intern
         raise ArgumentError.new("Cannot have fields named #{r}") if INVALID_FIELDS.include?(r)
         r
       end
     end
 
     def initialize(type, options = {}, &block)
-      @type = symbolize(type)
+      @type = type.intern
       raise ArgumentError, "Invalid record type #{@type}" unless [:record, :text].include?(@type)
 
       set_options(options)
@@ -97,7 +97,7 @@ module Puppet::Util::FileParsing
     # Customize this so we can do a bit of validation.
     def optional=(optional)
       @optional = optional.collect do |field|
-        symbolize(field)
+        field.intern
       end
     end
 
@@ -141,6 +141,11 @@ module Puppet::Util::FileParsing
   end
 
   # Try to match a record.
+  #
+  # @param [String] line The line to be parsed
+  # @param [Puppet::Util::FileType] record The filetype to use for parsing
+  #
+  # @return [Hash<Symbol, Object>] The parsed elements of the line
   def handle_record_line(line, record)
     ret = nil
     if record.respond_to?(:process)
@@ -156,7 +161,6 @@ module Puppet::Util::FileParsing
       # In this case, we try to match the whole line and then use the
       # match captures to get our fields.
       if match = regex.match(line)
-        fields = []
         ret = {}
         record.fields.zip(match.captures).each do |field, value|
           if value == record.absent
@@ -210,9 +214,9 @@ module Puppet::Util::FileParsing
 
   # Split text into separate lines using the record separator.
   def lines(text)
-    # Remove any trailing separators, and then split based on them
-    # LAK:NOTE See http://snurl.com/21zf8  [groups_google_com]
-    x = text.sub(/#{self.line_separator}\Q/,'').split(self.line_separator)
+    # NOTE: We do not have to remove trailing separators because split will ignore
+    # them by default (unless you pass -1 as a second parameter)
+    text.split(self.line_separator)
   end
 
   # Split a bunch of text into lines and then parse them individually.
@@ -269,7 +273,7 @@ module Puppet::Util::FileParsing
     raise ArgumentError, "Must include a list of fields" unless options.include?(:fields)
 
     record = FileRecord.new(:record, options, &block)
-    record.name = symbolize(name)
+    record.name = name.intern
 
     new_line_type(record)
   end
@@ -284,7 +288,7 @@ module Puppet::Util::FileParsing
     raise ArgumentError, "You must provide a :match regex for text lines" unless options.include?(:match)
 
     record = FileRecord.new(:text, options, &block)
-    record.name = symbolize(name)
+    record.name = name.intern
 
     new_line_type(record)
   end
@@ -338,11 +342,11 @@ module Puppet::Util::FileParsing
   end
 
   def valid_attr?(type, attr)
-    type = symbolize(type)
-    if record = record_type(type) and record.fields.include?(symbolize(attr))
+    type = type.intern
+    if record = record_type(type) and record.fields.include?(attr.intern)
       return true
     else
-      if symbolize(attr) == :ensure
+      if attr.intern == :ensure
         return true
       else
         false
@@ -367,7 +371,7 @@ module Puppet::Util::FileParsing
 
   # Retrieve the record object.
   def record_type(type)
-    @record_types[symbolize(type)]
+    @record_types[type.intern]
   end
 end
 

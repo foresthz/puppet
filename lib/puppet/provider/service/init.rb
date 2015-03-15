@@ -5,7 +5,7 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
 
   def self.defpath
     case Facter.value(:operatingsystem)
-    when "FreeBSD"
+    when "FreeBSD", "DragonFly"
       ["/etc/rc.d", "/usr/local/etc/rc.d"]
     when "HP-UX"
       "/sbin/init.d"
@@ -19,12 +19,50 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
   # We can't confine this here, because the init path can be overridden.
   #confine :exists => defpath
 
+  # some init scripts are not safe to execute, e.g. we do not want
+  # to suddently run /etc/init.d/reboot.sh status and reboot our system. The
+  # exclude list could be platform agnostic but I assume an invalid init script
+  # on system A will never be a valid init script on system B
+  def self.excludes
+    excludes = []
+    # these exclude list was found with grep -L '\/sbin\/runscript' /etc/init.d/* on gentoo
+    excludes += %w{functions.sh reboot.sh shutdown.sh}
+    # this exclude list is all from /sbin/service (5.x), but I did not exclude kudzu
+    excludes += %w{functions halt killall single linuxconf reboot boot}
+    # 'wait-for-state' and 'portmap-wait' are excluded from instances here
+    # because they take parameters that have unclear meaning. It looks like
+    # 'wait-for-state' is a generic waiter mainly used internally for other
+    # upstart services as a 'sleep until something happens'
+    # (http://lists.debian.org/debian-devel/2012/02/msg01139.html), while
+    # 'portmap-wait' is a specific instance of a waiter. There is an open
+    # launchpad bug
+    # (https://bugs.launchpad.net/ubuntu/+source/upstart/+bug/962047) that may
+    # eventually explain how to use the wait-for-state service or perhaps why
+    # it should remain excluded. When that bug is adddressed this should be
+    # reexamined.
+    excludes += %w{wait-for-state portmap-wait}
+    # these excludes were found with grep -r -L start /etc/init.d
+    excludes += %w{rcS module-init-tools}
+    # Prevent puppet failing to get status of the new service introduced
+    # by the fix for this (bug https://bugs.launchpad.net/ubuntu/+source/lightdm/+bug/982889)
+    # due to puppet's inability to deal with upstart services with instances.
+    excludes += %w{plymouth-ready}
+    # Prevent puppet failing to get status of these services, which need parameters
+    # passed in (see https://bugs.launchpad.net/ubuntu/+source/puppet/+bug/1276766).
+    excludes += %w{idmapd-mounting startpar-bridge}
+    # Prevent puppet failing to get status of these services, additional upstart
+    # service with instances
+    excludes += %w{cryptdisks-udev}
+    excludes += %w{statd-mounting}
+    excludes += %w{gssd-mounting}
+  end
+
   # List all services of this type.
   def self.instances
     get_services(self.defpath)
   end
 
-  def self.get_services(defpath, exclude=[])
+  def self.get_services(defpath, exclude = self.excludes)
     defpath = [defpath] unless defpath.is_a? Array
     instances = []
     defpath.each do |path|
@@ -69,7 +107,7 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
       if File.directory?(path)
         true
       else
-        if File.exist?(path) and ! File.directory?(path)
+        if Puppet::FileSystem.exist?(path)
           self.debug "Search path #{path} is not a directory"
         else
           self.debug "Search path #{path} does not exist"
@@ -80,33 +118,23 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
   end
 
   def search(name)
-    paths.each { |path|
+    paths.each do |path|
       fqname = File.join(path,name)
-      begin
-        stat = File.stat(fqname)
-      rescue
-        # should probably rescue specific errors...
+      if Puppet::FileSystem.exist? fqname
+        return fqname
+      else
         self.debug("Could not find #{name} in #{path}")
-        next
       end
+    end
 
-      # if we've gotten this far, we found a valid script
-      return fqname
-    }
-
-    paths.each { |path|
+    paths.each do |path|
       fqname_sh = File.join(path,"#{name}.sh")
-      begin
-        stat = File.stat(fqname_sh)
-      rescue
-        # should probably rescue specific errors...
+      if Puppet::FileSystem.exist? fqname_sh
+        return fqname_sh
+      else
         self.debug("Could not find #{name}.sh in #{path}")
-        next
       end
-
-      # if we've gotten this far, we found a valid script
-      return fqname_sh
-    }
+    end
     raise Puppet::Error, "Could not find init script for '#{name}'"
   end
 
@@ -134,7 +162,8 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
 private
 
   def self.is_init?(script = initscript)
-    !File.symlink?(script) || File.readlink(script) != "/lib/init/upstart-job"
+    file = Puppet::FileSystem.pathname(script)
+    !Puppet::FileSystem.symlink?(file) || Puppet::FileSystem.readlink(file) != "/lib/init/upstart-job"
   end
 end
 

@@ -1,7 +1,6 @@
 require 'puppet/application'
 require 'puppet/util/network_device'
 
-
 class Puppet::Application::Device < Puppet::Application
 
   run_mode :agent
@@ -11,6 +10,7 @@ class Puppet::Application::Device < Puppet::Application
   def app_defaults
     super.merge({
       :catalog_terminus => :rest,
+      :catalog_cache_terminus => :json,
       :node_terminus => :rest,
       :facts_terminus => :network_device,
     })
@@ -46,12 +46,7 @@ class Puppet::Application::Device < Puppet::Application
   end
 
   option("--logdest DEST", "-l DEST") do |arg|
-    begin
-      Puppet::Util::Log.newdestination(arg)
-      options[:setdest] = true
-    rescue => detail
-      Puppet.log_exception(detail)
-    end
+    handle_logdest_arg(arg)
   end
 
   option("--waitforcert WAITFORCERT", "-w") do |arg|
@@ -63,7 +58,7 @@ class Puppet::Application::Device < Puppet::Application
   end
 
     def help
-      <<-HELP
+      <<-'HELP'
 
 puppet-device(8) -- Manage remote network devices
 ========
@@ -71,7 +66,7 @@ puppet-device(8) -- Manage remote network devices
 SYNOPSIS
 --------
 Retrieves all configurations from the puppet master and apply
-them to the remote devices configured in /etc/puppet/device.conf.
+them to the remote devices configured in /etc/puppetlabs/puppet/device.conf.
 
 Currently must be run out periodically, using cron or something similar.
 
@@ -89,7 +84,7 @@ retrieve its configuration and apply it.
 
 USAGE NOTES
 -----------
-One need a /etc/puppet/device.conf file with the following content:
+One need a /etc/puppetlabs/puppet/device.conf file with the following content:
 
 [remote.device.fqdn]
 type <type>
@@ -111,7 +106,7 @@ Supported url must conforms to:
 
 OPTIONS
 -------
-Note that any configuration parameter that's valid in the configuration file
+Note that any setting that's valid in the configuration file
 is also a valid long argument.  For example, 'server' is a valid configuration
 parameter, so you can specify '--server <servername>' as an argument.
 
@@ -177,9 +172,9 @@ Licensed under the Apache 2.0 License
         Puppet.info "starting applying configuration to #{device.name} at #{device.url}"
 
         # override local $vardir and $certname
-        Puppet.settings.set_value(:confdir, ::File.join(Puppet[:devicedir], device.name), :cli)
-        Puppet.settings.set_value(:vardir, ::File.join(Puppet[:devicedir], device.name), :cli)
-        Puppet.settings.set_value(:certname, device.name, :cli)
+        Puppet[:confdir] = ::File.join(Puppet[:devicedir], device.name)
+        Puppet[:vardir] = ::File.join(Puppet[:devicedir], device.name)
+        Puppet[:certname] = device.name
 
         # this will reload and recompute default settings and create the devices sub vardir, or we hope so :-)
         Puppet.settings.use :main, :agent, :ssl
@@ -194,13 +189,13 @@ Licensed under the Apache 2.0 License
 
         require 'puppet/configurer'
         configurer = Puppet::Configurer.new
-        report = configurer.run(:network_device => true)
+        configurer.run(:network_device => true, :pluginsync => Puppet[:pluginsync])
       rescue => detail
         Puppet.log_exception(detail)
       ensure
-        Puppet.settings.set_value(:vardir, vardir, :cli)
-        Puppet.settings.set_value(:confdir, confdir, :cli)
-        Puppet.settings.set_value(:certname, certname, :cli)
+        Puppet[:vardir] = vardir
+        Puppet[:confdir] = confdir
+        Puppet[:certname] = certname
         Puppet::SSL::Host.reset
       end
     end
@@ -209,7 +204,7 @@ Licensed under the Apache 2.0 License
   def setup_host
     @host = Puppet::SSL::Host.new
     waitforcert = options[:waitforcert] || (Puppet[:onetime] ? 0 : Puppet[:waitforcert])
-    cert = @host.wait_for_cert(waitforcert)
+    @host.wait_for_cert(waitforcert)
   end
 
   def setup
@@ -225,17 +220,15 @@ Licensed under the Apache 2.0 License
 
     Puppet.settings.use :main, :agent, :device, :ssl
 
-    # Always ignoreimport for agent. It really shouldn't even try to import,
-    # but this is just a temporary band-aid.
-    Puppet[:ignoreimport] = true
-
-    # We need to specify a ca location for all of the SSL-related i
+    # We need to specify a ca location for all of the SSL-related
     # indirected classes to work; in fingerprint mode we just need
     # access to the local files and we don't need a ca.
     Puppet::SSL::Host.ca_location = :remote
 
     Puppet::Transaction::Report.indirection.terminus_class = :rest
 
-    Puppet::Resource::Catalog.indirection.cache_class = :yaml
+    if Puppet[:catalog_cache_terminus]
+      Puppet::Resource::Catalog.indirection.cache_class = Puppet[:catalog_cache_terminus].intern
+    end
   end
 end

@@ -16,10 +16,10 @@ class Puppet::Provider::Command
     @options = options
   end
 
-  # @param [Array<String>] Any command line arguments to pass to the executable
-  # @returns The output from the command
+  # @param args [Array<String>] Any command line arguments to pass to the executable
+  # @return The output from the command
   def execute(*args)
-    resolved_executable = @resolver.which(@executable) or raise Puppet::Error, "Command #{@name} is missing"
+    resolved_executable = @resolver.which(@executable) or raise Puppet::MissingCommand, "Command #{@name} is missing"
     @executor.execute([resolved_executable] + args, @options)
   end
 end

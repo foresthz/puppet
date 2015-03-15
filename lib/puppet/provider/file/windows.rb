@@ -2,47 +2,28 @@ Puppet::Type.type(:file).provide :windows do
   desc "Uses Microsoft Windows functionality to manage file ownership and permissions."
 
   confine :operatingsystem => :windows
+  has_feature :manages_symlinks if Puppet.features.manages_symlinks?
 
   include Puppet::Util::Warnings
 
   if Puppet.features.microsoft_windows?
     require 'puppet/util/windows'
-    require 'puppet/util/adsi'
     include Puppet::Util::Windows::Security
-  end
-
-  ERROR_INVALID_SID_STRUCTURE = 1337
-
-  def id2name(id)
-    # If it's a valid sid, get the name. Otherwise, it's already a name, so
-    # just return it.
-    begin
-      if string_to_sid_ptr(id)
-        name = nil
-        Puppet::Util::ADSI.execquery(
-          "SELECT Name FROM Win32_Account WHERE SID = '#{id}'
-           AND LocalAccount = true"
-        ).each { |a| name ||= a.name }
-        return name
-      end
-    rescue Puppet::Util::Windows::Error => e
-      raise unless e.code == ERROR_INVALID_SID_STRUCTURE
-    end
-
-    id
   end
 
   # Determine if the account is valid, and if so, return the UID
   def name2id(value)
-    # If it's a valid sid, then return it. Else, it's a name we need to convert
-    # to sid.
-    begin
-      return value if string_to_sid_ptr(value)
-    rescue Puppet::Util::Windows::Error => e
-      raise unless e.code == ERROR_INVALID_SID_STRUCTURE
-    end
+    Puppet::Util::Windows::SID.name_to_sid(value)
+  end
 
-    Puppet::Util::ADSI.sid_for_account(value) rescue nil
+  # If it's a valid SID, get the name. Otherwise, it's already a name,
+  # so just return it.
+  def id2name(id)
+    if Puppet::Util::Windows::SID.valid_sid?(id)
+      Puppet::Util::Windows::SID.sid_to_name(id)
+    else
+      id
+    end
   end
 
   # We use users and groups interchangeably, so use the same methods for both
@@ -54,35 +35,35 @@ Puppet::Type.type(:file).provide :windows do
   alias :name2uid :name2id
 
   def owner
-    return :absent unless resource.exist?
+    return :absent unless resource.stat
     get_owner(resource[:path])
   end
 
   def owner=(should)
     begin
-      set_owner(should, resource[:path])
+      set_owner(should, resolved_path)
     rescue => detail
-      raise Puppet::Error, "Failed to set owner to '#{should}': #{detail}"
+      raise Puppet::Error, "Failed to set owner to '#{should}': #{detail}", detail.backtrace
     end
   end
 
   def group
-    return :absent unless resource.exist?
+    return :absent unless resource.stat
     get_group(resource[:path])
   end
 
   def group=(should)
     begin
-      set_group(should, resource[:path])
+      set_group(should, resolved_path)
     rescue => detail
-      raise Puppet::Error, "Failed to set group to '#{should}': #{detail}"
+      raise Puppet::Error, "Failed to set group to '#{should}': #{detail}", detail.backtrace
     end
   end
 
   def mode
-    if resource.exist?
+    if resource.stat
       mode = get_mode(resource[:path])
-      mode ? mode.to_s(8) : :absent
+      mode ? mode.to_s(8).rjust(4, '0') : :absent
     else
       :absent
     end
@@ -103,5 +84,21 @@ Puppet::Type.type(:file).provide :windows do
     if [:owner, :group, :mode].any?{|p| resource[p]} and !supports_acl?(resource[:path])
       resource.fail("Can only manage owner, group, and mode on filesystems that support Windows ACLs, such as NTFS")
     end
+  end
+
+  attr_reader :file
+  private
+  def file
+    @file ||= Puppet::FileSystem.pathname(resource[:path])
+  end
+
+  def resolved_path
+    path = file()
+    # under POSIX, :manage means use lchown - i.e. operate on the link
+    return path.to_s if resource[:links] == :manage
+
+    # otherwise, use chown -- that will resolve the link IFF it is a link
+    # otherwise it will operate on the path
+    Puppet::FileSystem.symlink?(path) ? Puppet::FileSystem.readlink(path) : path.to_s
   end
 end

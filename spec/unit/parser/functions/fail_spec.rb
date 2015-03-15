@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 describe "the 'fail' parser function" do
@@ -7,13 +7,15 @@ describe "the 'fail' parser function" do
   end
 
   let :scope do
-    scope = Puppet::Parser::Scope.new
+    node     = Puppet::Node.new('localhost')
+    compiler = Puppet::Parser::Compiler.new(node)
+    scope    = Puppet::Parser::Scope.new(compiler)
     scope.stubs(:environment).returns(nil)
     scope
   end
 
   it "should exist" do
-    Puppet::Parser::Functions.function(:fail).should == "function_fail"
+    expect(Puppet::Parser::Functions.function(:fail)).to eq("function_fail")
   end
 
   it "should raise a parse error if invoked" do

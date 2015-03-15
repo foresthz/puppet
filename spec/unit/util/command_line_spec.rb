@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/face'
@@ -6,64 +6,55 @@ require 'puppet/util/command_line'
 
 describe Puppet::Util::CommandLine do
   include PuppetSpec::Files
-  let :tty  do stub("tty",  :tty? => true)  end
-  let :pipe do stub("pipe", :tty? => false) end
 
   context "#initialize" do
     it "should pull off the first argument if it looks like a subcommand" do
-      command_line = Puppet::Util::CommandLine.new("puppet", %w{ client --help whatever.pp }, tty)
+      command_line = Puppet::Util::CommandLine.new("puppet", %w{ client --help whatever.pp })
 
-      command_line.subcommand_name.should == "client"
-      command_line.args.should            == %w{ --help whatever.pp }
+      expect(command_line.subcommand_name).to eq("client")
+      expect(command_line.args).to            eq(%w{ --help whatever.pp })
     end
 
     it "should return nil if the first argument looks like a .pp file" do
-      command_line = Puppet::Util::CommandLine.new("puppet", %w{ whatever.pp }, tty)
+      command_line = Puppet::Util::CommandLine.new("puppet", %w{ whatever.pp })
 
-      command_line.subcommand_name.should == nil
-      command_line.args.should            == %w{ whatever.pp }
-    end
-
-    it "should return nil if the first argument looks like a .rb file" do
-      command_line = Puppet::Util::CommandLine.new("puppet", %w{ whatever.rb }, tty)
-
-      command_line.subcommand_name.should == nil
-      command_line.args.should            == %w{ whatever.rb }
+      expect(command_line.subcommand_name).to eq(nil)
+      expect(command_line.args).to            eq(%w{ whatever.pp })
     end
 
     it "should return nil if the first argument looks like a flag" do
-      command_line = Puppet::Util::CommandLine.new("puppet", %w{ --debug }, tty)
+      command_line = Puppet::Util::CommandLine.new("puppet", %w{ --debug })
 
-      command_line.subcommand_name.should == nil
-      command_line.args.should            == %w{ --debug }
+      expect(command_line.subcommand_name).to eq(nil)
+      expect(command_line.args).to            eq(%w{ --debug })
     end
 
     it "should return nil if the first argument is -" do
-      command_line = Puppet::Util::CommandLine.new("puppet", %w{ - }, tty)
+      command_line = Puppet::Util::CommandLine.new("puppet", %w{ - })
 
-      command_line.subcommand_name.should == nil
-      command_line.args.should            == %w{ - }
+      expect(command_line.subcommand_name).to eq(nil)
+      expect(command_line.args).to            eq(%w{ - })
     end
 
     it "should return nil if the first argument is --help" do
-      command_line = Puppet::Util::CommandLine.new("puppet", %w{ --help }, tty)
+      command_line = Puppet::Util::CommandLine.new("puppet", %w{ --help })
 
-      command_line.subcommand_name.should == nil
+      expect(command_line.subcommand_name).to eq(nil)
     end
 
 
-    it "should return nil if there are no arguments on a tty" do
-      command_line = Puppet::Util::CommandLine.new("puppet", [], tty)
+    it "should return nil if there are no arguments" do
+      command_line = Puppet::Util::CommandLine.new("puppet", [])
 
-      command_line.subcommand_name.should == nil
-      command_line.args.should            == []
+      expect(command_line.subcommand_name).to eq(nil)
+      expect(command_line.args).to            eq([])
     end
 
-    it "should return nil if there are no arguments on a pipe" do
-      command_line = Puppet::Util::CommandLine.new("puppet", [], pipe)
-
-      command_line.subcommand_name.should == nil
-      command_line.args.should            == []
+    it "should pick up changes to the array of arguments" do
+      args = %w{subcommand}
+      command_line = Puppet::Util::CommandLine.new("puppet", args)
+      args[0] = 'different_subcommand'
+      expect(command_line.subcommand_name).to eq('different_subcommand')
     end
   end
 
@@ -71,84 +62,102 @@ describe Puppet::Util::CommandLine do
     %w{--version -V}.each do |arg|
       it "should print the version and exit if #{arg} is given" do
         expect do
-          described_class.new("puppet", [arg], tty).execute
-        end.to have_printed(Puppet.version)
+          described_class.new("puppet", [arg]).execute
+        end.to have_printed(/^#{Regexp.escape(Puppet.version)}$/)
       end
     end
   end
 
   describe "when dealing with puppet commands" do
     it "should return the executable name if it is not puppet" do
-      command_line = Puppet::Util::CommandLine.new("puppetmasterd", [], tty)
-      command_line.subcommand_name.should == "puppetmasterd"
+      command_line = Puppet::Util::CommandLine.new("puppetmasterd", [])
+      expect(command_line.subcommand_name).to eq("puppetmasterd")
     end
 
     describe "when the subcommand is not implemented" do
       it "should find and invoke an executable with a hyphenated name" do
-        commandline = Puppet::Util::CommandLine.new("puppet", ['whatever', 'argument'], tty)
+        commandline = Puppet::Util::CommandLine.new("puppet", ['whatever', 'argument'])
         Puppet::Util.expects(:which).with('puppet-whatever').
           returns('/dev/null/puppet-whatever')
 
-        # It is important that we abort at the point exec is called, because
-        # the code (reasonably) assumes that if `exec` is called processing
-        # immediately terminates, and we are replaced by the executed process.
-        #
-        # This raise isn't a perfect simulation of that, but it is enough to
-        # validate that the system works, and ... well, if exec is broken we
-        # have two problems, y'know.
-        commandline.expects(:exec).with('/dev/null/puppet-whatever', 'argument').
-          raises(SystemExit)
+        Kernel.expects(:exec).with('/dev/null/puppet-whatever', 'argument')
 
-        expect { commandline.execute }.to raise_error SystemExit
+        commandline.execute
       end
 
       describe "and an external implementation cannot be found" do
         it "should abort and show the usage message" do
-          commandline = Puppet::Util::CommandLine.new("puppet", ['whatever', 'argument'], tty)
           Puppet::Util.expects(:which).with('puppet-whatever').returns(nil)
+          commandline = Puppet::Util::CommandLine.new("puppet", ['whatever', 'argument'])
           commandline.expects(:exec).never
 
           expect {
             commandline.execute
-          }.to have_printed(/Unknown Puppet subcommand 'whatever'/)
+          }.to have_printed(/Unknown Puppet subcommand 'whatever'/).and_exit_with(1)
+        end
+
+        it "should abort and show the help message" do
+          Puppet::Util.expects(:which).with('puppet-whatever').returns(nil)
+          commandline = Puppet::Util::CommandLine.new("puppet", ['whatever', 'argument'])
+          commandline.expects(:exec).never
+
+          expect {
+            commandline.execute
+          }.to have_printed(/See 'puppet help' for help on available puppet subcommands/).and_exit_with(1)
+        end
+
+        %w{--version -V}.each do |arg|
+          it "should abort and display #{arg} information" do
+            Puppet::Util.expects(:which).with('puppet-whatever').returns(nil)
+            commandline = Puppet::Util::CommandLine.new("puppet", ['whatever', arg])
+            commandline.expects(:exec).never
+
+            expect {
+              commandline.execute
+            }.to have_printed(%r[^#{Regexp.escape(Puppet.version)}$]).and_exit_with(1)
+          end
         end
       end
     end
-    describe 'when loading commands' do
-      let :core_apps do
-        %w{describe filebucket kick queue resource agent cert apply doc master}
+
+    describe 'when setting process priority' do
+      let(:command_line) do
+        Puppet::Util::CommandLine.new("puppet", %w{ agent })
       end
 
-      let :command_line do
-        Puppet::Util::CommandLine.new("foo", %w{ client --help whatever.pp }, tty)
+      before :each do
+        Puppet::Util::CommandLine::ApplicationSubcommand.any_instance.stubs(:run)
       end
 
-      it "should expose available_subcommands as a class method" do
-        core_apps.each do |command|
-          command_line.available_subcommands.should include command
-        end
+      it 'should never set priority by default' do
+        Process.expects(:setpriority).never
+
+        command_line.execute
       end
-      it 'should be able to find all existing commands' do
-        core_apps.each do |command|
-          command_line.available_subcommands.should include command
-        end
+
+      it 'should lower the process priority if one has been specified' do
+        Puppet[:priority] = 10
+
+        Process.expects(:setpriority).with(0, Process.pid, 10)
+        command_line.execute
       end
-      describe 'when multiple paths have applications' do
-        before do
-          @dir=tmpdir('command_line_plugin_test')
-          @appdir="#{@dir}/puppet/application"
-          FileUtils.mkdir_p(@appdir)
-          FileUtils.touch("#{@appdir}/foo.rb")
-          $LOAD_PATH.unshift(@dir) # WARNING: MUST MATCH THE AFTER ACTIONS!
-        end
-        it 'should be able to find commands from both paths' do
-          found = command_line.available_subcommands
-          found.should include 'foo'
-          core_apps.each { |cmd| found.should include cmd }
-        end
-        after do
-          $LOAD_PATH.shift        # WARNING: MUST MATCH THE BEFORE ACTIONS!
-        end
+
+      it 'should warn if trying to raise priority, but not privileged user' do
+        Puppet[:priority] = -10
+
+        Process.expects(:setpriority).raises(Errno::EACCES, 'Permission denied')
+        Puppet.expects(:warning).with("Failed to set process priority to '-10'")
+
+        command_line.execute
+      end
+
+      it "should warn if the platform doesn't support `Process.setpriority`" do
+        Puppet[:priority] = 15
+
+        Process.expects(:setpriority).raises(NotImplementedError, 'NotImplementedError: setpriority() function is unimplemented on this machine')
+        Puppet.expects(:warning).with("Failed to set process priority to '15'")
+
+        command_line.execute
       end
     end
   end

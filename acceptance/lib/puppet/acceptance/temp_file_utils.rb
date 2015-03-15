@@ -13,13 +13,39 @@ module Puppet
       # * :owner (default 'root') the username of the user that the file should be owned by
       # * :group (default 'puppet') the name of the group that the file should be owned by
       # * :mode (default '644') the mode (file permissions) that the file should be created with
-      def create_test_file(host, file_rel_path, file_content, options)
+      def create_test_file(host, file_rel_path, file_content, options = {})
 
         # set default options
         options[:mkdirs] ||= false
-        options[:owner] ||= host['user']
-        options[:group] ||= host['group'] || "puppet"
         options[:mode] ||= "755"
+        unless options[:owner]
+          if host['roles'].include?('master') then
+            options[:owner] = host.puppet['user']
+          else
+            case host['platform']
+            when /windows/
+              options[:owner] = 'Administrator'
+            else
+              options[:owner] = 'root'
+            end
+          end
+        end
+        unless options[:group]
+          if host['roles'].include?('master') then
+            options[:group] = host.puppet['group']
+          else
+            case host['platform']
+            when /windows/
+              options[:group] = 'Administrators'
+            when /aix/
+              options[:group] = 'system'
+            when /osx|bsd/
+              options[:group] = 'wheel'
+            else
+              options[:owner] = 'root'
+            end
+          end
+        end
 
         file_path = get_test_file_path(host, file_rel_path)
 
@@ -55,6 +81,20 @@ module Puppet
 
       def file_exists?(host, file_path)
         host.execute("test -f \"#{file_path}\"",
+                     :acceptable_exit_codes => [0, 1])  do |result|
+          return result.exit_code == 0
+        end
+      end
+
+      def dir_exists?(host, dir_path)
+        host.execute("test -d \"#{dir_path}\"",
+                     :acceptable_exit_codes => [0, 1])  do |result|
+          return result.exit_code == 0
+        end
+      end
+
+      def link_exists?(host, link_path)
+        host.execute("test -L \"#{link_path}\"",
                      :acceptable_exit_codes => [0, 1])  do |result|
           return result.exit_code == 0
         end

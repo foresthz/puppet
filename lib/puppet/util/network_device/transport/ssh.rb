@@ -7,10 +7,11 @@ require 'puppet/util/network_device/transport/base'
 # a sane interface to Net::SSH. Credits goes to net-ssh-telnet authors
 class Puppet::Util::NetworkDevice::Transport::Ssh < Puppet::Util::NetworkDevice::Transport::Base
 
-  attr_accessor :buf, :ssh, :channel, :verbose
+  attr_accessor :buf, :ssh, :channel
 
-  def initialize
-    super
+  def initialize(verbose = false)
+    super()
+    @verbose = verbose
     unless Puppet.features.ssh?
       raise 'Connecting with ssh to a network device requires the \'net/ssh\' ruby library'
     end
@@ -32,11 +33,11 @@ class Puppet::Util::NetworkDevice::Transport::Ssh < Puppet::Util::NetworkDevice:
       Puppet.debug("connecting to #{host} as #{user}")
       @ssh = Net::SSH.start(host, user, :port => port, :password => password, :timeout => timeout)
     rescue TimeoutError
-      raise TimeoutError, "timed out while opening an ssh connection to the host"
+      raise TimeoutError, "timed out while opening an ssh connection to the host", $!.backtrace
     rescue Net::SSH::AuthenticationFailed
-      raise Puppet::Error, "SSH authentication failure connecting to #{host} as #{user}"
-    rescue Net::SSH::Exception => detail
-      raise Puppet::Error, "SSH connection failure to #{host}"
+      raise Puppet::Error, "SSH authentication failure connecting to #{host} as #{user}", $!.backtrace
+    rescue Net::SSH::Exception
+      raise Puppet::Error, "SSH connection failure to #{host}", $!.backtrace
     end
 
     @buf = ""
@@ -48,8 +49,8 @@ class Puppet::Util::NetworkDevice::Transport::Ssh < Puppet::Util::NetworkDevice:
       channel.send_channel_request("shell") do |ch, success|
         raise "failed to open ssh shell channel" unless success
 
-        ch.on_data { |ch,data| @buf << data }
-        ch.on_extended_data { |ch,type,data|  @buf << data if type == 1 }
+        ch.on_data { |_,data| @buf << data }
+        ch.on_extended_data { |_,type,data|  @buf << data if type == 1 }
         ch.on_close { @eof = true }
 
         @channel = ch

@@ -1,7 +1,10 @@
 require 'optparse'
-require 'puppet/util/plugins'
+require 'puppet/util/command_line'
 require 'puppet/util/constant_inflector'
 require 'puppet/error'
+require 'puppet/application_support'
+
+module Puppet
 
 # This class handles all the aspects of a Puppet application/executable
 # * setting up options
@@ -18,7 +21,7 @@ require 'puppet/error'
 #      Puppet::Application::Example.new.run
 #
 #
-# class Puppet::Application::Example << Puppet::Application
+# class Puppet::Application::Example < Puppet::Application
 #
 #     def preinit
 #         # perform some pre initialization
@@ -84,7 +87,7 @@ require 'puppet/error'
 #
 # === Setup
 # Applications can use the setup block to perform any initialization.
-# The defaul +setup+ behaviour is to: read Puppet configuration and manage log level and destination
+# The default +setup+ behaviour is to: read Puppet configuration and manage log level and destination
 #
 # === What and how to run
 # If the +dispatch+ block is defined it is called. This block should return the name of the registered command
@@ -94,7 +97,7 @@ require 'puppet/error'
 # === Execution state
 # The class attributes/methods of Puppet::Application serve as a global place to set and query the execution
 # status of the application: stopping, restarting, etc.  The setting of the application status does not directly
-# aftect its running status; it's assumed that the various components within the application will consult these
+# affect its running status; it's assumed that the various components within the application will consult these
 # settings appropriately and affect their own processing accordingly.  Control operations (signal handlers and
 # the like) should set the status appropriately to indicate to the overall system that it's the process of
 # stopping or restarting (or just running as usual).
@@ -116,13 +119,14 @@ require 'puppet/error'
 #          process_member(member)
 #      end
 #  end
-module Puppet
 class Application
   require 'puppet/util'
   include Puppet::Util
 
   DOCPATTERN = ::File.expand_path(::File.dirname(__FILE__) + "/util/command_line/*" )
+  CommandLineArgs = Struct.new(:subcommand_name, :args)
 
+  @loader = Puppet::Util::Autoload.new(self, 'puppet/application')
 
   class << self
     include Puppet::Util
@@ -177,27 +181,10 @@ class Application
       result
     end
 
-    SHOULD_PARSE_CONFIG_DEPRECATION_MSG = "is no longer supported; config file parsing " +
-        "is now controlled by the puppet engine, rather than by individual applications.  This " +
-        "method will be removed in a future version of puppet."
-
-    def should_parse_config
-      Puppet.deprecation_warning("should_parse_config " + SHOULD_PARSE_CONFIG_DEPRECATION_MSG)
-    end
-
-    def should_not_parse_config
-      Puppet.deprecation_warning("should_not_parse_config " + SHOULD_PARSE_CONFIG_DEPRECATION_MSG)
-    end
-
-    def should_parse_config?
-      Puppet.deprecation_warning("should_parse_config? " + SHOULD_PARSE_CONFIG_DEPRECATION_MSG)
-      true
-    end
-
     # used to declare code that handle an option
     def option(*options, &block)
       long = options.find { |opt| opt =~ /^--/ }.gsub(/^--(?:\[no-\])?([^ =]+).*$/, '\1' ).gsub('-','_')
-      fname = symbolize("handle_#{long}")
+      fname = "handle_#{long}".intern
       if (block_given?)
         define_method(fname, &block)
       else
@@ -219,17 +206,32 @@ class Application
       @option_parser_commands
     end
 
-    def find(file_name)
-      # This should probably be using the autoloader, but due to concerns about the fact that
-      #  the autoloader currently considers the modulepath when looking for things to load,
-      #  we're delaying that for now.
+    # @return [Array<String>] the names of available applications
+    # @api public
+    def available_application_names
+      @loader.files_to_load.map do |fn|
+        ::File.basename(fn, '.rb')
+      end.uniq
+    end
+
+    # Finds the class for a given application and loads the class. This does
+    # not create an instance of the application, it only gets a handle to the
+    # class. The code for the application is expected to live in a ruby file
+    # `puppet/application/#{name}.rb` that is available on the `$LOAD_PATH`.
+    #
+    # @param application_name [String] the name of the application to find (eg. "apply").
+    # @return [Class] the Class instance of the application that was found.
+    # @raise [Puppet::Error] if the application class was not found.
+    # @raise [LoadError] if there was a problem loading the application file.
+    # @api public
+    def find(application_name)
       begin
-        require ::File.join('puppet', 'application', file_name.to_s.downcase)
+        require @loader.expand(application_name.to_s.downcase)
       rescue LoadError => e
-        Puppet.log_and_raise(e, "Unable to find application '#{file_name}'.  #{e}")
+        Puppet.log_and_raise(e, "Unable to find application '#{application_name}'. #{e}")
       end
 
-      class_name = Puppet::Util::ConstantInflector.file2constant(file_name.to_s)
+      class_name = Puppet::Util::ConstantInflector.file2constant(application_name.to_s)
 
       clazz = try_load_class(class_name)
 
@@ -239,7 +241,7 @@ class Application
       ####  and then get rid of this stanza in a subsequent release.
       ################################################################
       if (clazz.nil?)
-        class_name = file_name.capitalize
+        class_name = application_name.capitalize
         clazz = try_load_class(class_name)
       end
       ################################################################
@@ -247,7 +249,7 @@ class Application
       ################################################################
 
       if clazz.nil?
-        raise Puppet::Error.new("Unable to load application class '#{class_name}' from file 'puppet/application/#{file_name}.rb'")
+        raise Puppet::Error.new("Unable to load application class '#{class_name}' from file 'puppet/application/#{application_name}.rb'")
       end
 
       return clazz
@@ -265,19 +267,23 @@ class Application
       find(name).new
     end
 
-    #
-    # I think that it would be nice to look into changing this into two methods (getter/setter); however,
-    #  it sounds like this is a desirable feature of our ruby DSL. --cprice 2012-03-06
-    #
-
     # Sets or gets the run_mode name. Sets the run_mode name if a mode_name is
     # passed. Otherwise, gets the run_mode or a default run_mode
     #
     def run_mode( mode_name = nil)
+      if mode_name
+        Puppet.settings.preferred_run_mode = mode_name
+      end
+
       return @run_mode if @run_mode and not mode_name
 
       require 'puppet/util/run_mode'
-      @run_mode = Puppet::Util::RunMode[ mode_name || :user ]
+      @run_mode = Puppet::Util::RunMode[ mode_name || Puppet.settings.preferred_run_mode ]
+    end
+
+    # This is for testing only
+    def clear_everything_for_tests
+      @run_mode = @banner = @run_status = @option_parser_commands = nil
     end
   end
 
@@ -311,35 +317,31 @@ class Application
   def preinit
   end
 
-  def initialize(command_line = nil)
-
-    require 'puppet/util/command_line'
-    @command_line = command_line || Puppet::Util::CommandLine.new
+  def initialize(command_line = Puppet::Util::CommandLine.new)
+    @command_line = CommandLineArgs.new(command_line.subcommand_name, command_line.args.dup)
     @options = {}
-
   end
 
-  # This is the main application entry point
+  # Execute the application.
+  # @api public
+  # @return [void]
   def run
 
     # I don't really like the names of these lifecycle phases.  It would be nice to change them to some more meaningful
-    # names, and make deprecated aliases.  Also, Daniel suggests that we can probably get rid of this "plugin_hook"
-    # pattern, but we need to check with PE and the community first.  --cprice 2012-03-16
-    #
+    # names, and make deprecated aliases.  --cprice 2012-03-16
 
     exit_on_fail("get application-specific default settings") do
-      plugin_hook('initialize_app_defaults') { initialize_app_defaults }
+      initialize_app_defaults
     end
 
-    require 'puppet'
-    require 'puppet/util/instrumentation'
-    Puppet::Util::Instrumentation.init
+    Puppet::ApplicationSupport.push_application_context(self.class.run_mode)
 
-    exit_on_fail("initialize")                                   { plugin_hook('preinit')       { preinit } }
-    exit_on_fail("parse application options")                    { plugin_hook('parse_options') { parse_options } }
-    exit_on_fail("prepare for execution")                        { plugin_hook('setup')         { setup } }
+    exit_on_fail("initialize")                                   { preinit }
+    exit_on_fail("parse application options")                    { parse_options }
+    exit_on_fail("prepare for execution")                        { setup }
     exit_on_fail("configure routes from #{Puppet[:route_file]}") { configure_indirector_routes }
-    exit_on_fail("run")                                          { plugin_hook('run_command')   { run_command } }
+    exit_on_fail("log runtime debug info")                       { log_runtime_environment }
+    exit_on_fail("run")                                          { run_command }
   end
 
   def main
@@ -355,32 +357,62 @@ class Application
   end
 
   def setup_logs
-    if options[:debug] or options[:verbose]
+    if options[:debug] || options[:verbose]
       Puppet::Util::Log.newdestination(:console)
-      if options[:debug]
-        Puppet::Util::Log.level = :debug
-      else
-        Puppet::Util::Log.level = :info
-      end
     end
+
+    set_log_level
 
     Puppet::Util::Log.setup_default unless options[:setdest]
   end
 
-  def configure_indirector_routes
-    route_file = Puppet[:route_file]
-    if ::File.exists?(route_file)
-      routes = YAML.load_file(route_file)
-      application_routes = routes[name.to_s]
-      Puppet::Indirector.configure_routes(application_routes) if application_routes
+  def set_log_level(opts = nil)
+    opts ||= options
+    if opts[:debug]
+      Puppet::Util::Log.level = :debug
+    elsif opts[:verbose] && !Puppet::Util::Log.sendlevel?(:info)
+      Puppet::Util::Log.level = :info
     end
+  end
+
+  def handle_logdest_arg(arg)
+    begin
+      Puppet::Util::Log.newdestination(arg)
+      options[:setdest] = true
+    rescue => detail
+      Puppet.log_exception(detail)
+    end
+  end
+
+  def configure_indirector_routes
+    Puppet::ApplicationSupport.configure_indirector_routes(name.to_s)
+  end
+
+  # Output basic information about the runtime environment for debugging
+  # purposes.
+  #
+  # @api public
+  #
+  # @param extra_info [Hash{String => #to_s}] a flat hash of extra information
+  #   to log. Intended to be passed to super by subclasses.
+  # @return [void]
+  def log_runtime_environment(extra_info=nil)
+    runtime_info = {
+      'puppet_version' => Puppet.version,
+      'ruby_version'   => RUBY_VERSION,
+      'run_mode'       => self.class.run_mode.name,
+    }
+    runtime_info['default_encoding'] = Encoding.default_external
+    runtime_info.merge!(extra_info) unless extra_info.nil?
+
+    Puppet.debug 'Runtime environment: ' + runtime_info.map{|k,v| k + '=' + v.to_s}.join(', ')
   end
 
   def parse_options
     # Create an option parser
     option_parser = OptionParser.new(self.class.banner)
 
-    # He're we're building up all of the options that the application may need to handle.  The main
+    # Here we're building up all of the options that the application may need to handle.  The main
     # puppet settings defined in "defaults.rb" have already been parsed once (in command_line.rb) by
     # the time we get here; however, our app may wish to handle some of them specially, so we need to
     # make the parser aware of them again.  We might be able to make this a bit more efficient by
@@ -409,8 +441,6 @@ class Application
     option_parser.parse!(self.command_line.args)
   end
 
-
-
   def handlearg(opt, val)
     opt, val = Puppet::Settings.clean_opt(opt, val)
     send(:handle_unknown, opt, val) if respond_to?(:handle_unknown)
@@ -428,15 +458,5 @@ class Application
   def help
     "No help available for puppet #{name}"
   end
-
-
-
-  def plugin_hook(step,&block)
-    Puppet::Plugins.send("before_application_#{step}",:application_object => self)
-    x = yield
-    Puppet::Plugins.send("after_application_#{step}",:application_object => self, :return_value => x)
-    x
-  end
-  private :plugin_hook
 end
 end

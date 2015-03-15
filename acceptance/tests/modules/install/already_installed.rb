@@ -1,63 +1,55 @@
-begin test_name "puppet module install (already installed)"
+test_name "puppet module install (already installed)"
+require 'puppet/acceptance/module_utils'
+extend Puppet::Acceptance::ModuleUtils
 
-step 'Setup'
-require 'resolv'; ip = Resolv.getaddress('forge-dev.puppetlabs.lan')
-apply_manifest_on master, "host { 'forge.puppetlabs.com': ip => '#{ip}' }"
-apply_manifest_on master, "file { ['/etc/puppet/modules', '/usr/share/puppet/modules']: ensure => directory, recurse => true, purge => true, force => true }"
-apply_manifest_on master, <<-PP
-file {
-  [
-    '/etc/puppet/modules/nginx',
-  ]: ensure => directory;
-  '/etc/puppet/modules/nginx/metadata.json':
-    content => '{
-      "name": "pmtacceptance/nginx",
-      "version": "0.0.1",
-      "source": "",
-      "author": "pmtacceptance",
-      "license": "MIT",
-      "dependencies": []
-    }';
-}
-PP
-
-step "Try to install a module that is already installed"
-on master, puppet("module install pmtacceptance-nginx"), :acceptable_exit_codes => [1] do
-  assert_output <<-OUTPUT
-    STDOUT> Preparing to install into /etc/puppet/modules ...
-    STDERR> \e[1;31mError: Could not install module 'pmtacceptance-nginx' (latest)
-    STDERR>   Module 'pmtacceptance-nginx' (v0.0.1) is already installed
-    STDERR>     Use `puppet module upgrade` to install a different version
-    STDERR>     Use `puppet module install --force` to re-install only this module\e[0m
-  OUTPUT
+hosts.each do |host|
+  skip_test "skip tests requiring forge certs on solaris and aix" if host['platform'] =~ /solaris/
 end
-on master, '[ -d /etc/puppet/modules/nginx ]'
 
-step "Try to install a specific version of a module that is already installed"
-on master, puppet("module install pmtacceptance-nginx --version 1.x"), :acceptable_exit_codes => [1] do
-  assert_output <<-OUTPUT
-    STDOUT> Preparing to install into /etc/puppet/modules ...
-    STDERR> \e[1;31mError: Could not install module 'pmtacceptance-nginx' (v1.x)
-    STDERR>   Module 'pmtacceptance-nginx' (v0.0.1) is already installed
-    STDERR>     Use `puppet module upgrade` to install a different version
-    STDERR>     Use `puppet module install --force` to re-install only this module\e[0m
-  OUTPUT
+module_author = "pmtacceptance"
+module_name   = "nginx"
+module_reference = "#{module_author}-#{module_name}"
+module_dependencies = []
+
+orig_installed_modules = get_installed_modules_for_hosts hosts
+teardown do
+  rm_installed_modules_from_hosts orig_installed_modules, (get_installed_modules_for_hosts hosts)
 end
-on master, '[ -d /etc/puppet/modules/nginx ]'
 
-step "Install a module that is already installed (with --force)"
-on master, puppet("module install pmtacceptance-nginx --force") do
-  assert_output <<-OUTPUT
-    Preparing to install into /etc/puppet/modules ...
-    Downloading from http://forge.puppetlabs.com ...
-    Installing -- do not interrupt ...
-    /etc/puppet/modules
-    └── pmtacceptance-nginx (\e[0;36mv0.0.1\e[0m)
-  OUTPUT
+step "Setup" do
+  stub_forge_on(master)
 end
-on master, '[ -d /etc/puppet/modules/nginx ]'
 
-ensure step "Teardown"
-apply_manifest_on master, "host { 'forge.puppetlabs.com': ensure => absent }"
-apply_manifest_on master, "file { '/etc/puppet/modules': recurse => true, purge => true, force => true }"
+step "Check that module is not installed" do
+  assert_module_not_installed_on_disk(master, module_name)
+end
+
+step "Install module" do
+  on master, puppet("module install #{module_reference}")
+  assert_module_installed_on_disk(master, module_name)
+end
+
+step "Try to install a module that is already installed" do
+  on master, puppet("module install #{module_reference}"), :acceptable_exit_codes => [0] do
+    assert_match(/#{module_reference}.*is already installed/, stdout,
+          "Error that module was already installed was not displayed")
+  end
+  assert_module_installed_on_disk(master, module_name)
+end
+
+step "Try to install a specific version of a module that is already installed" do
+  on master, puppet("module install #{module_reference} --version 1.x"), :acceptable_exit_codes => [1] do
+    assert_match(/Could not install module '#{module_reference}' \(v1.x\)/, stderr,
+          "Error that specified module version could not be installed was not displayed")
+    assert_match(/#{module_reference}.*is already installed/, stderr,
+          "Error that module was already installed was not displayed")
+  end
+  assert_module_installed_on_disk(master, module_name)
+end
+
+step "Install a module that is already installed (with --force)" do
+  on master, puppet("module install #{module_reference} --force") do
+    assert_module_installed_ui(stdout, module_author, module_name)
+  end
+  assert_module_installed_on_disk(master, module_name)
 end

@@ -3,8 +3,11 @@
 # This allows packages to exist on the same machine using different packaging
 # systems.
 
+require 'puppet/parameter/package_options'
+require 'puppet/parameter/boolean'
+
 module Puppet
-  newtype(:package) do
+  Type.newtype(:package) do
     @doc = "Manage packages.  There is a basic dichotomy in package
       support right now:  Some package types (e.g., yum and apt) can
       retrieve their own package files, while others (e.g., rpm and sun)
@@ -17,10 +20,19 @@ module Puppet
       requires in order to function, and you must meet those requirements
       to use a given provider.
 
+      You can declare multiple package resources with the same `name`, as long
+      as they specify different providers and have unique titles.
+
+      Note that you must use the _title_ to make a reference to a package
+      resource; `Package[<NAME>]` is not a synonym for `Package[<TITLE>]` like
+      it is for many other resource types.
+
       **Autorequires:** If Puppet is managing the files specified as a
       package's `adminfile`, `responsefile`, or `source`, the package
       resource will autorequire those files."
 
+    feature :reinstallable, "The provider can reinstall packages.",
+      :methods => [:reinstall]
     feature :installable, "The provider can install packages.",
       :methods => [:install]
     feature :uninstallable, "The provider can uninstall packages.",
@@ -46,6 +58,13 @@ module Puppet
       :methods => [:hold]
     feature :install_options, "The provider accepts options to be
       passed to the installer command."
+    feature :uninstall_options, "The provider accepts options to be
+      passed to the uninstaller command."
+    feature :package_settings, "The provider accepts package_settings to be
+      ensured for the given package. The meaning and format of these settings is
+      provider-specific.",
+      :methods => [:package_settings_insync?, :package_settings, :package_settings=]
+    feature :virtual_packages, "The provider accepts virtual package names for install and uninstall."
 
     ensurable do
       desc <<-EOT
@@ -54,7 +73,7 @@ module Puppet
         retrieve by specifying a version number or `latest` as the ensure
         value. On packaging systems that manage configuration files separately
         from "normal" system files, you can uninstall config files by
-        specifying `purged` as the ensure value.
+        specifying `purged` as the ensure value. This defaults to `installed`.
       EOT
 
       attr_accessor :latest
@@ -86,7 +105,7 @@ module Puppet
         begin
           provider.update
         rescue => detail
-          self.fail "Could not update: #{detail}"
+          self.fail Puppet::Error, "Could not update: #{detail}", detail
         end
 
         if current == :absent
@@ -100,7 +119,7 @@ module Puppet
         begin
           provider.install
         rescue => detail
-          self.fail "Could not update: #{detail}"
+          self.fail Puppet::Error, "Could not update: #{detail}", detail
         end
 
         if self.retrieve == :absent
@@ -163,6 +182,10 @@ module Puppet
           # supports providers that can have multiple versions installed
           when *Array(is)
             return true
+          else
+            # We have version numbers, and no match. If the provider has
+            # additional logic, run it here.
+            return provider.insync?(is) if provider.respond_to?(:insync?)
           end
         }
 
@@ -187,9 +210,9 @@ module Puppet
     newparam(:name) do
       desc "The package name.  This is the name that the packaging
       system uses internally, which is sometimes (especially on Solaris)
-      a name that is basically useless to humans.  If you want to
-      abstract package installation, then you can use aliases to provide
-      a common name to packages:
+      a name that is basically useless to humans.  If a package goes by
+      several names, you can use a single title and then set the name
+      conditionally:
 
           # In the 'openssl' class
           $ssl = $operatingsystem ? {
@@ -197,11 +220,9 @@ module Puppet
             default => openssl
           }
 
-          # It is not an error to set an alias to the same value as the
-          # object name.
-          package { $ssl:
-            ensure => installed,
-            alias  => openssl
+          package { 'openssl':
+            name   => $ssl,
+            ensure => installed
           }
 
           . etc. .
@@ -211,23 +232,133 @@ module Puppet
             default => openssh
           }
 
-          # Use the alias to specify a dependency, rather than
-          # having another selector to figure it out again.
-          package { $ssh:
+          package { 'openssh':
+            name    => $ssh
             ensure  => installed,
-            alias   => openssh,
-            require => Package[openssl]
+            require => Package['openssl']
           }
 
       "
       isnamevar
+
+      validate do |value|
+        if !value.is_a?(String)
+          raise ArgumentError, "Name must be a String not #{value.class}"
+        end
+      end
+    end
+
+    # We call providify here so that we can set provider as a namevar.
+    # Normally this method is called after newtype finishes constructing this
+    # Type class.
+    providify
+    paramclass(:provider).isnamevar
+
+    # We have more than one namevar, so we need title_patterns. However, we
+    # cheat and set the patterns to map to name only and completely ignore
+    # provider. So far, the logic that determines uniqueness appears to just
+    # "Do The Right Thing™" when the provider is explicitly set by the user.
+    #
+    # The following resources will be seen as uniqe by puppet:
+    #
+    #     # Uniqueness Key: ['mysql', nil]
+    #     package{'mysql': }
+    #
+    #     # Uniqueness Key: ['mysql', 'gem']
+    #     package{'gem-mysql':
+    #       name     => 'mysql,
+    #       provider => gem
+    #     }
+    #
+    # This does not handle the case where providers like 'yum' and 'rpm' should
+    # clash. Also, declarations that implicitly use the default provider will
+    # clash with those that explicitly use the default.
+    def self.title_patterns
+      # This is the default title pattern for all types, except hard-wired to
+      # set only name.
+      [ [ /(.*)/m, [ [:name] ] ] ]
+    end
+
+    newproperty(:package_settings, :required_features=>:package_settings) do
+      desc "Settings that can change the contents or configuration of a package.
+
+        The formatting and effects of package_settings are provider-specific; any
+        provider that implements them must explain how to use them in its
+        documentation. (Our general expectation is that if a package is
+        installed but its settings are out of sync, the provider should
+        re-install that package with the desired settings.)
+
+        An example of how package_settings could be used is FreeBSD's port build
+        options --- a future version of the provider could accept a hash of options,
+        and would reinstall the port if the installed version lacked the correct
+        settings.
+
+            package { 'www/apache22':
+              package_settings => { 'SUEXEC' => false }
+            }
+
+        Again, check the documentation of your platform's package provider to see
+        the actual usage."
+
+      validate do |value|
+        if provider.respond_to?(:package_settings_validate)
+          provider.package_settings_validate(value)
+        else
+          super(value)
+        end
+      end
+
+      munge do |value|
+        if provider.respond_to?(:package_settings_munge)
+          provider.package_settings_munge(value)
+        else
+          super(value)
+        end
+      end
+
+      def insync?(is)
+        provider.package_settings_insync?(should, is)
+      end
+
+      def should_to_s(newvalue)
+        if provider.respond_to?(:package_settings_should_to_s)
+          provider.package_settings_should_to_s(should, newvalue)
+        else
+          super(newvalue)
+        end
+      end
+
+      def is_to_s(currentvalue)
+        if provider.respond_to?(:package_settings_is_to_s)
+          provider.package_settings_is_to_s(should, currentvalue)
+        else
+          super(currentvalue)
+        end
+      end
+
+      def change_to_s(currentvalue, newvalue)
+        if provider.respond_to?(:package_settings_change_to_s)
+          provider.package_settings_change_to_s(currentvalue, newvalue)
+        else
+          super(currentvalue,newvalue)
+        end
+      end
     end
 
     newparam(:source) do
-      desc "Where to find the actual package.  This must be a local file
-        (or on a network file system) or a URL that your specific
-        packaging type understands; Puppet will not retrieve files for you,
-        although you can manage packages as `file` resources."
+      desc "Where to find the package file. This is only used by providers that don't
+        automatically download packages from a central repository. (For example:
+        the `yum` and `apt` providers ignore this attribute, but the `rpm` and
+        `dpkg` providers require it.)
+
+        Different providers accept different values for `source`. Most providers
+        accept paths to local files stored on the target system. Some providers
+        may also accept URLs or network drive paths. Puppet will not
+        automatically retrieve source files for you, and usually just passes the
+        value of `source` to the package installation command.
+
+        You can use a `file` resource if you need to manually copy package files
+        to the target system."
 
       validate do |value|
         provider.validate_source(value)
@@ -242,23 +373,16 @@ module Puppet
       desc "A read-only parameter set by the package."
     end
 
-    newparam(:type) do
-      desc "Deprecated form of `provider`."
-
-      munge do |value|
-        Puppet.deprecation_warning "'type' is deprecated; use 'provider' instead"
-        @resource[:provider] = value
-
-        @resource[:provider]
-      end
-    end
-
     newparam(:adminfile) do
       desc "A file containing package defaults for installing packages.
-        This is currently only used on Solaris.  The value will be
-        validated according to system rules, which in the case of
-        Solaris means that it should either be a fully qualified path
-        or it should be in `/var/sadm/install/admin`."
+
+        This attribute is only used on Solaris. Its value should be a path to a
+        local file stored on the target system. Solaris's package tools expect
+        either an absolute file path or a relative path to a file in
+        `/var/sadm/install/admin`.
+
+        The value of `adminfile` will be passed directly to the `pkgadd` or
+        `pkgrm` command with the `-a <ADMINFILE>` option."
     end
 
     newparam(:responsefile) do
@@ -301,30 +425,60 @@ module Puppet
     end
 
     newparam(:flavor) do
-      desc "Newer versions of OpenBSD support 'flavors', which are
-        further specifications for which type of package you want."
+      desc "OpenBSD supports 'flavors', which are further specifications for
+        which type of package you want."
     end
 
-    newparam(:install_options, :required_features => :install_options) do
+    newparam(:install_options, :parent => Puppet::Parameter::PackageOptions, :required_features => :install_options) do
       desc <<-EOT
-        A hash of additional options to pass when installing a package. These
+        An array of additional options to pass when installing a package. These
         options are package-specific, and should be documented by the software
-        vendor. The most commonly implemented option is `INSTALLDIR`:
+        vendor.  One commonly implemented option is `INSTALLDIR`:
 
             package { 'mysql':
               ensure          => installed,
-              provider        => 'msi',
               source          => 'N:/packages/mysql-5.5.16-winx64.msi',
-              install_options => { 'INSTALLDIR' => 'C:\\mysql-5.5' },
+              install_options => [ '/S', { 'INSTALLDIR' => 'C:\\mysql-5.5' } ],
             }
 
-        Since these options are passed verbatim to `msiexec`, any file paths
-        specified in `install_options` should use a backslash as the separator
-        character rather than a forward slash. This is the **only** place in Puppet
-        where backslash separators should be used. Note that backslashes in
-        double-quoted strings _must_ be double-escaped and backslashes
-        in single-quoted strings _may_ be double-escaped.
+        Each option in the array can either be a string or a hash, where each
+        key and value pair are interpreted in a provider specific way.  Each
+        option will automatically be quoted when passed to the install command.
+
+        On Windows, this is the **only** place in Puppet where backslash
+        separators should be used.  Note that backslashes in double-quoted
+        strings _must_ be double-escaped and backslashes in single-quoted
+        strings _may_ be double-escaped.
       EOT
+    end
+
+    newparam(:uninstall_options, :parent => Puppet::Parameter::PackageOptions, :required_features => :uninstall_options) do
+      desc <<-EOT
+        An array of additional options to pass when uninstalling a package. These
+        options are package-specific, and should be documented by the software
+        vendor.  For example:
+
+            package { 'VMware Tools':
+              ensure            => absent,
+              uninstall_options => [ { 'REMOVE' => 'Sync,VSS' } ],
+            }
+
+        Each option in the array can either be a string or a hash, where each
+        key and value pair are interpreted in a provider specific way.  Each
+        option will automatically be quoted when passed to the uninstall
+        command.
+
+        On Windows, this is the **only** place in Puppet where backslash
+        separators should be used.  Note that backslashes in double-quoted
+        strings _must_ be double-escaped and backslashes in single-quoted
+        strings _may_ be double-escaped.
+      EOT
+    end
+
+    newparam(:allow_virtual, :boolean => true, :parent => Puppet::Parameter::Boolean, :required_features => :virtual_packages) do
+      desc 'Specifies if virtual package names are allowed for install and uninstall.'
+
+      defaultto true
     end
 
     autorequire(:file) do
@@ -352,6 +506,46 @@ module Puppet
     # exists and returns nil if it does not.
     def exists?
       @provider.get(:ensure) != :absent
+    end
+
+    def present?(current_values)
+      super && current_values[:ensure] != :purged
+    end
+
+    # This parameter exists to ensure backwards compatibility is preserved.
+    # See https://github.com/puppetlabs/puppet/pull/2614 for discussion.
+    # If/when a metaparameter for controlling how arbitrary resources respond
+    # to refreshing is created, that will supersede this, and this will be
+    # deprecated.
+    newparam(:reinstall_on_refresh) do
+      desc "Whether this resource should respond to refresh events (via `subscribe`,
+        `notify`, or the `~>` arrow) by reinstalling the package. Only works for
+        providers that support the `reinstallable` feature.
+
+        This is useful for source-based distributions, where you may want to
+        recompile a package if the build options change.
+
+        If you use this, be careful of notifying classes when you want to restart
+        services. If the class also contains a refreshable package, doing so could
+        cause unnecessary re-installs.
+
+        Defaults to `false`."
+      newvalues(:true, :false)
+
+      defaultto :false
+    end
+
+    # When a refresh event is triggered, calls reinstall on providers
+    # that support the reinstall_on_refresh parameter.
+    def refresh
+      if provider.reinstallable? &&
+        @parameters[:reinstall_on_refresh].value == :true &&
+        @parameters[:ensure].value != :purged &&
+        @parameters[:ensure].value != :absent &&
+        @parameters[:ensure].value != :held
+
+        provider.reinstall
+      end
     end
   end
 end

@@ -1,9 +1,21 @@
-test_name "Agent should environment given by ENC"
+test_name "Agent should use environment given by ENC"
+require 'puppet/acceptance/classifier_utils.rb'
+extend Puppet::Acceptance::ClassifierUtils
 
-testdir = master.tmpdir('use_enc_env')
+testdir = create_tmpdir_for_user master, 'use_enc_env'
+
+if master.is_pe?
+  group = {
+    'name' => 'Special Environment',
+    'description' => 'Classify our test agent nodes in the special environment.',
+    'environment' => 'special',
+    'environment_trumps' => true,
+  }
+  create_group_for_nodes(agents, group)
+else
 
 create_remote_file master, "#{testdir}/enc.rb", <<END
-#!/usr/bin/env ruby
+#!#{master['privatebindir']}/ruby
 puts <<YAML
 parameters:
 environment: special
@@ -11,27 +23,48 @@ YAML
 END
 on master, "chmod 755 #{testdir}/enc.rb"
 
-create_remote_file master, "#{testdir}/puppet.conf", <<END
-[main]
-node_terminus = exec
-external_nodes = "#{testdir}/enc.rb"
-manifest = "#{testdir}/site.pp"
+end
 
-[special]
-manifest = "#{testdir}/different.pp"
-END
+apply_manifest_on(master, <<-MANIFEST, :catch_failures => true)
+  File {
+    ensure => directory,
+    mode => "0770",
+    owner => #{master.puppet['user']},
+    group => #{master.puppet['group']},
+  }
+  file {
+    '#{testdir}/environments':;
+    '#{testdir}/environments/production':;
+    '#{testdir}/environments/production/manifests':;
+    '#{testdir}/environments/special/':;
+    '#{testdir}/environments/special/manifests':;
+  }
+  file { '#{testdir}/environments/production/manifests/site.pp':
+    ensure => file,
+    mode => "0640",
+    content => 'notify { "production environment": }',
+  }
+  file { '#{testdir}/environments/special/manifests/different.pp':
+    ensure => file,
+    mode => "0640",
+    content => 'notify { "expected_string": }',
+  }
+MANIFEST
 
-create_remote_file(master, "#{testdir}/different.pp", 'notify { "expected_string": }')
+master_opts = {
+  'main' => {
+    'environmentpath' => "#{testdir}/environments",
+  },
+}
+master_opts['master'] = {
+  'node_terminus' => 'exec',
+  'external_nodes' => "#{testdir}/enc.rb",
+} if !master.is_pe?
 
-on master, "chown -R root:puppet #{testdir}"
-on master, "chmod -R g+rwX #{testdir}"
-
-with_master_running_on(master, "--config #{testdir}/puppet.conf --daemonize --dns_alt_names=\"puppet,$(hostname -s),$(hostname -f)\" --autosign true") do
+with_puppet_running_on master, master_opts, testdir do
 
   agents.each do |agent|
     run_agent_on(agent, "--no-daemonize --onetime --server #{master} --verbose")
     assert_match(/expected_string/, stdout, "Did not find expected_string from \"special\" environment")
   end
 end
-
-on master, "rm -rf #{testdir}"

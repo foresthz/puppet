@@ -1,17 +1,27 @@
-require 'net/http'
-require 'open-uri'
-require 'pathname'
-require 'uri'
-require 'puppet/forge/cache'
-require 'puppet/forge/repository'
+require 'puppet/vendor'
+Puppet::Vendor.load_vendored
 
-class Puppet::Forge
-  # +consumer_name+ is a name to be used for identifying the consumer of the
-  # forge and +consumer_semver+ is a SemVer object to identify the version of
-  # the consumer
-  def initialize(consumer_name, consumer_semver)
-    @consumer_name = consumer_name
-    @consumer_semver = consumer_semver
+require 'net/http'
+require 'tempfile'
+require 'uri'
+require 'pathname'
+require 'json'
+require 'semantic'
+
+class Puppet::Forge < Semantic::Dependency::Source
+  require 'puppet/forge/cache'
+  require 'puppet/forge/repository'
+  require 'puppet/forge/errors'
+
+  include Puppet::Forge::Errors
+
+  USER_AGENT = "PMT/1.1.1 (v3; Net::HTTP)".freeze
+
+  attr_reader :host, :repository
+
+  def initialize(host = Puppet[:module_repository])
+    @host = host
+    @repository = Puppet::Forge::Repository.new(host, USER_AGENT)
   end
 
   # Return a list of module metadata hashes that match the search query.
@@ -33,81 +43,184 @@ class Puppet::Forge
   #   }
   # ]
   #
+  # @param term [String] search term
+  # @return [Array] modules found
+  # @raise [Puppet::Forge::Errors::CommunicationError] if there is a network
+  #   related error
+  # @raise [Puppet::Forge::Errors::SSLVerifyError] if there is a problem
+  #   verifying the remote SSL certificate
+  # @raise [Puppet::Forge::Errors::ResponseError] if the repository returns a
+  #   bad HTTP response
   def search(term)
-    server = Puppet.settings[:module_repository].sub(/^(?!https?:\/\/)/, 'http://')
-    Puppet.notice "Searching #{server} ..."
-    response = repository.make_http_request("/modules.json?q=#{URI.escape(term)}")
-
-    case response.code
-    when "200"
-      matches = PSON.parse(response.body)
-    else
-      raise RuntimeError, "Could not execute search (HTTP #{response.code})"
+    matches = []
+    uri = "/v3/modules?query=#{URI.escape(term)}"
+    if Puppet[:module_groups]
+      uri += "&module_groups=#{Puppet[:module_groups]}"
     end
 
-    matches
-  end
+    while uri
+      response = make_http_request(uri)
 
-  def remote_dependency_info(author, mod_name, version)
-    version_string = version ? "&version=#{version}" : ''
-    response = repository.make_http_request("/api/v1/releases.json?module=#{author}/#{mod_name}#{version_string}")
-    json = PSON.parse(response.body) rescue {}
-    case response.code
-    when "200"
-      return json
-    else
-      error = json['error'] || ''
-      if error =~ /^Module #{author}\/#{mod_name} has no release/
-        return []
+      if response.code == '200'
+        result = JSON.parse(response.body)
+        uri = result['pagination']['next']
+        matches.concat result['results']
       else
-        raise RuntimeError, "Could not find release information for this module (#{author}/#{mod_name}) (HTTP #{response.code})"
+        raise ResponseError.new(:uri => URI.parse(@host).merge(uri), :response => response)
       end
     end
+
+    matches.each do |mod|
+      mod['author'] = mod['owner']['username']
+      mod['tag_list'] = mod['current_release']['tags']
+      mod['full_name'] = "#{mod['author']}/#{mod['name']}"
+      mod['version'] = mod['current_release']['version']
+      mod['project_url'] = mod['homepage_url']
+      mod['desc'] = mod['current_release']['metadata']['summary'] || ''
+    end
   end
 
-  def get_release_packages_from_repository(install_list)
-    install_list.map do |release|
-      modname, version, file = release
-      cache_path = nil
-      if file
-        begin
-          cache_path = repository.retrieve(file)
-        rescue OpenURI::HTTPError => e
-          raise RuntimeError, "Could not download module: #{e.message}"
+  # Fetches {ModuleRelease} entries for each release of the named module.
+  #
+  # @param input [String] the module name to look up
+  # @return [Array<Semantic::Dependency::ModuleRelease>] a list of releases for
+  #         the given name
+  # @see Semantic::Dependency::Source#fetch
+  def fetch(input)
+    name = input.tr('/', '-')
+    uri = "/v3/releases?module=#{name}"
+    if Puppet[:module_groups]
+      uri += "&module_groups=#{Puppet[:module_groups]}"
+    end
+    releases = []
+
+    while uri
+      response = make_http_request(uri)
+
+      if response.code == '200'
+        response = JSON.parse(response.body)
+      else
+        raise ResponseError.new(:uri => URI.parse(@host).merge(uri), :response => response)
+      end
+
+      releases.concat(process(response['results']))
+      uri = response['pagination']['next']
+    end
+
+    return releases
+  end
+
+  def make_http_request(*args)
+    @repository.make_http_request(*args)
+  end
+
+  class ModuleRelease < Semantic::Dependency::ModuleRelease
+    attr_reader :install_dir, :metadata
+
+    def initialize(source, data)
+      @data = data
+      @metadata = meta = data['metadata']
+
+      name = meta['name'].tr('/', '-')
+      version = Semantic::Version.parse(meta['version'])
+      release = "#{name}@#{version}"
+
+      if meta['dependencies']
+        dependencies = meta['dependencies'].collect do |dep|
+          begin
+            Puppet::ModuleTool::Metadata.new.add_dependency(dep['name'], dep['version_requirement'], dep['repository'])
+            Puppet::ModuleTool.parse_module_dependency(release, dep)[0..1]
+          rescue ArgumentError => e
+            raise ArgumentError, "Malformed dependency: #{dep['name']}. Exception was: #{e}"
+          end
         end
       else
-        raise RuntimeError, "Malformed response from module repository."
+        dependencies = []
       end
-      cache_path
+
+      super(source, name, version, Hash[dependencies])
+    end
+
+    def install(dir)
+      staging_dir = self.prepare
+
+      module_dir = dir + name[/-(.*)/, 1]
+      module_dir.rmtree if module_dir.exist?
+
+      # Make sure unpacked module has the same ownership as the folder we are moving it into.
+      Puppet::ModuleTool::Applications::Unpacker.harmonize_ownership(dir, staging_dir)
+
+      FileUtils.mv(staging_dir, module_dir)
+      @install_dir = dir
+
+      # Return the Pathname object representing the directory where the
+      # module release archive was unpacked the to.
+      return module_dir
+    ensure
+      staging_dir.rmtree if staging_dir.exist?
+    end
+
+    def prepare
+      return @unpacked_into if @unpacked_into
+
+      download(@data['file_uri'], tmpfile)
+      validate_checksum(tmpfile, @data['file_md5'])
+      unpack(tmpfile, tmpdir)
+
+      @unpacked_into = Pathname.new(tmpdir)
+    end
+
+    private
+
+    # Obtain a suitable temporary path for unpacking tarballs
+    #
+    # @return [Pathname] path to temporary unpacking location
+    def tmpdir
+      @dir ||= Dir.mktmpdir(name, Puppet::Forge::Cache.base_path)
+    end
+
+    def tmpfile
+      @file ||= Tempfile.new(name, Puppet::Forge::Cache.base_path).tap do |f|
+        f.binmode
+      end
+    end
+
+    def download(uri, destination)
+      response = @source.make_http_request(uri, destination)
+      destination.flush and destination.close
+      unless response.code == '200'
+        raise Puppet::Forge::Errors::ResponseError.new(:uri => uri, :response => response)
+      end
+    end
+
+    def validate_checksum(file, checksum)
+      if Digest::MD5.file(file.path).hexdigest != checksum
+        raise RuntimeError, "Downloaded release for #{name} did not match expected checksum"
+      end
+    end
+
+    def unpack(file, destination)
+      begin
+        Puppet::ModuleTool::Applications::Unpacker.unpack(file.path, destination)
+      rescue Puppet::ExecutionFailure => e
+        raise RuntimeError, "Could not extract contents of module archive: #{e.message}"
+      end
     end
   end
 
-  # Locate a module release package on the local filesystem and move it
-  # into the `Puppet.settings[:module_working_dir]`. Do not unpack it, just
-  # return the location of the package on disk.
-  def get_release_package_from_filesystem(filename)
-    if File.exist?(File.expand_path(filename))
-      repository = Repository.new('file:///')
-      uri = URI.parse("file://#{URI.escape(File.expand_path(filename))}")
-      cache_path = repository.retrieve(uri)
-    else
-      raise ArgumentError, "File does not exists: #{filename}"
+  private
+
+  def process(list)
+    l = list.map do |release|
+      metadata = release['metadata']
+      begin
+        ModuleRelease.new(self, release)
+      rescue ArgumentError => e
+        Puppet.warning "Cannot consider release #{metadata['name']}-#{metadata['version']}: #{e}"
+        false
+      end
     end
 
-    cache_path
+    l.select { |r| r }
   end
-
-  def retrieve(release)
-    repository.retrieve(release)
-  end
-
-  def uri
-    repository.uri
-  end
-
-  def repository
-    version = "#{@consumer_name}/#{[@consumer_semver.major, @consumer_semver.minor, @consumer_semver.tiny].join('.')}#{@consumer_semver.special}"
-    @repository ||= Puppet::Forge::Repository.new(Puppet[:module_repository], version)
-  end
-  private :repository
 end

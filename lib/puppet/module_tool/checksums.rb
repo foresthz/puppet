@@ -1,4 +1,5 @@
 require 'digest/md5'
+require 'puppet/network/format_support'
 
 module Puppet::ModuleTool
 
@@ -7,6 +8,7 @@ module Puppet::ModuleTool
   # This class proides methods for generating checksums for data and adding
   # them to +Metadata+.
   class Checksums
+    include Puppet::Network::FormatSupport
     include Enumerable
 
     # Instantiate object with string +path+ to create checksums from.
@@ -16,7 +18,7 @@ module Puppet::ModuleTool
 
     # Return checksum for the +Pathname+.
     def checksum(pathname)
-      return Digest::MD5.hexdigest(pathname.read)
+      return Digest::MD5.hexdigest(Puppet::FileSystem.binread(pathname))
     end
 
     # Return checksums for object's +Pathname+, generate if it's needed.
@@ -36,17 +38,12 @@ module Puppet::ModuleTool
       return @data
     end
 
+    alias :to_data_hash :data
+    alias :to_hash :data
+
     # TODO: Why?
     def each(&block)
       data.each(&block)
     end
-
-    # Update +Metadata+'s checksums with this object's.
-    def annotate(metadata)
-      metadata.checksums.replace(data)
-    end
-
-    # TODO: Move the Checksummer#run checksum checking to here?
-
   end
 end

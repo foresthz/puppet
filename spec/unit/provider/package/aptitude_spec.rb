@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 describe Puppet::Type.type(:package).provider(:aptitude) do
@@ -7,23 +7,30 @@ describe Puppet::Type.type(:package).provider(:aptitude) do
     type.new(:name => 'faff', :provider => :aptitude, :source => '/tmp/faff.deb')
   end
 
-  it { should be_versionable }
+  it { is_expected.to be_versionable }
 
   context "when retrieving ensure" do
+    let(:dpkgquery_path) { '/bin/dpkg-query' }
+
+    before do
+      Puppet::Util.stubs(:which).with('/usr/bin/dpkg-query').returns(dpkgquery_path)
+    end
+
     { :absent   => "deinstall ok config-files faff 1.2.3-1\n",
       "1.2.3-1" => "install ok installed faff 1.2.3-1\n",
     }.each do |expect, output|
-      it "should detect #{expect} packages" do
-        pkg.provider.expects(:dpkgquery).
-          with('-W', '--showformat', '${Status} ${Package} ${Version}\n', 'faff').
-          returns(output)
+      it "detects #{expect} packages" do
+        Puppet::Util::Execution.expects(:execute).with(
+          [dpkgquery_path, '-W', '--showformat', "'${Status} ${Package} ${Version}\\n'", 'faff'],
+          {:failonfail => true, :combine => true, :custom_environment => {}}
+        ).returns(output)
 
-        pkg.property(:ensure).retrieve.should == expect
+        expect(pkg.property(:ensure).retrieve).to eq(expect)
       end
     end
   end
 
-  it "should try and install when asked" do
+  it "installs when asked" do
     pkg.provider.expects(:aptitude).
       with('-y', '-o', 'DPkg::Options::=--force-confold', :install, 'faff').
       returns(0)
@@ -31,7 +38,7 @@ describe Puppet::Type.type(:package).provider(:aptitude) do
     pkg.provider.install
   end
 
-  it "should try and purge when asked" do
+  it "purges when asked" do
     pkg.provider.expects(:aptitude).with('-y', 'purge', 'faff').returns(0)
     pkg.provider.purge
   end

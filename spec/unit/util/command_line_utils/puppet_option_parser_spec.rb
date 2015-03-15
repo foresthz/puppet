@@ -65,7 +65,9 @@ describe Puppet::Util::CommandLine::PuppetOptionParser do
   end
 
   it "does not accept an unknown option specification" do
-    expect { option_parser.on("not", "enough") }.should raise_error(ArgumentError)
+    expect {
+      option_parser.on("not", "enough")
+    }.to raise_error(ArgumentError, /this method only takes 3 or 4 arguments/)
   end
 
   it "does not modify the original argument array" do
@@ -74,7 +76,7 @@ describe Puppet::Util::CommandLine::PuppetOptionParser do
 
     option_parser.parse(args)
 
-    args.length.should == 1
+    expect(args.length).to eq(1)
   end
 
   # The ruby stdlib OptionParser has an awesome "feature" that you cannot disable, whereby if
@@ -122,6 +124,6 @@ describe Puppet::Util::CommandLine::PuppetOptionParser do
 
     option_parser.parse(arguments)
 
-    seen_value.should == expected_value
+    expect(seen_value).to eq(expected_value)
   end
 end

@@ -1,6 +1,18 @@
+require 'digest/md5'
+require 'digest/sha1'
+
 # A stand-alone module for calculating checksums
 # in a generic way.
 module Puppet::Util::Checksums
+  module_function
+
+  # It's not a good idea to use some of these in some contexts: for example, I
+  # wouldn't try bucketing a file using the :none checksum type.
+  def known_checksum_types
+    [:sha256, :sha256lite, :md5, :md5lite, :sha1, :sha1lite,
+      :mtime, :ctime, :none]
+  end
+
   class FakeChecksum
     def <<(*args)
       self
@@ -9,7 +21,8 @@ module Puppet::Util::Checksums
 
   # Is the provided string a checksum?
   def checksum?(string)
-    string =~ /^\{(\w{3,5})\}\S+/
+    # 'sha256lite'.length == 10
+    string =~ /^\{(\w{3,10})\}\S+/
   end
 
   # Strip the checksum type from an existing checksum
@@ -22,9 +35,47 @@ module Puppet::Util::Checksums
     checksum =~ /^\{(\w+)\}/ ? $1 : nil
   end
 
+  # Calculate a checksum using Digest::SHA256.
+  def sha256(content)
+    require 'digest/sha2'
+    Digest::SHA256.hexdigest(content)
+  end
+
+  def sha256lite(content)
+    sha256(content[0..511])
+  end
+
+  def sha256_file(filename, lite = false)
+    require 'digest/sha2'
+
+    digest = Digest::SHA256.new
+    checksum_file(digest, filename,  lite)
+  end
+
+  def sha256lite_file(filename)
+    sha256_file(filename, true)
+  end
+
+  def sha256_stream(lite = false, &block)
+    require 'digest/sha2'
+    digest = Digest::SHA256.new
+    checksum_stream(digest, block, lite)
+  end
+
+  def sha256_hex_length
+    64
+  end
+
+  def sha256lite_stream(&block)
+    sha256_stream(true, &block)
+  end
+
+  def sha256lite_hex_length
+    sha256_hex_length
+  end
+
   # Calculate a checksum using Digest::MD5.
   def md5(content)
-    require 'digest/md5'
     Digest::MD5.hexdigest(content)
   end
 
@@ -35,8 +86,6 @@ module Puppet::Util::Checksums
 
   # Calculate a checksum of a file's content using Digest::MD5.
   def md5_file(filename, lite = false)
-    require 'digest/md5'
-
     digest = Digest::MD5.new
     checksum_file(digest, filename,  lite)
   end
@@ -46,23 +95,31 @@ module Puppet::Util::Checksums
     md5_file(filename, true)
   end
 
-  def md5_stream(&block)
-    require 'digest/md5'
+  def md5_stream(lite = false, &block)
     digest = Digest::MD5.new
-    yield digest
-    digest.hexdigest
+    checksum_stream(digest, block, lite)
   end
 
-  alias :md5lite_stream :md5_stream
+  def md5_hex_length
+    32
+  end
+
+  def md5lite_stream(&block)
+    md5_stream(true, &block)
+  end
+
+  def md5lite_hex_length
+    md5_hex_length
+  end
 
   # Return the :mtime timestamp of a file.
   def mtime_file(filename)
-    File.stat(filename).send(:mtime)
+    Puppet::FileSystem.stat(filename).send(:mtime)
   end
 
   # by definition this doesn't exist
   # but we still need to execute the block given
-  def mtime_stream
+  def mtime_stream(&block)
     noop_digest = FakeChecksum.new
     yield noop_digest
     nil
@@ -74,7 +131,6 @@ module Puppet::Util::Checksums
 
   # Calculate a checksum using Digest::SHA1.
   def sha1(content)
-    require 'digest/sha1'
     Digest::SHA1.hexdigest(content)
   end
 
@@ -85,8 +141,6 @@ module Puppet::Util::Checksums
 
   # Calculate a checksum of a file's content using Digest::SHA1.
   def sha1_file(filename, lite = false)
-    require 'digest/sha1'
-
     digest = Digest::SHA1.new
     checksum_file(digest, filename, lite)
   end
@@ -96,21 +150,31 @@ module Puppet::Util::Checksums
     sha1_file(filename, true)
   end
 
-  def sha1_stream
-    require 'digest/sha1'
+  def sha1_stream(lite = false, &block)
     digest = Digest::SHA1.new
-    yield digest
-    digest.hexdigest
+    checksum_stream(digest, block, lite)
   end
 
-  alias :sha1lite_stream :sha1_stream
+  def sha1_hex_length
+    40
+  end
+
+  def sha1lite_stream(&block)
+    sha1_stream(true, &block)
+  end
+
+  def sha1lite_hex_length
+    sha1_hex_length
+  end
 
   # Return the :ctime of a file.
   def ctime_file(filename)
-    File.stat(filename).send(:ctime)
+    Puppet::FileSystem.stat(filename).send(:ctime)
   end
 
-  alias :ctime_stream :mtime_stream
+  def ctime_stream(&block)
+    mtime_stream(&block)
+  end
 
   def ctime(content)
     ""
@@ -131,7 +195,28 @@ module Puppet::Util::Checksums
     ""
   end
 
-  private
+  class DigestLite
+    def initialize(digest, lite = false)
+      @digest = digest
+      @lite = lite
+      @bytes = 0
+    end
+
+    # Provide an interface for digests. If lite, only digest the first 512 bytes
+    def <<(str)
+      if @lite
+        if @bytes < 512
+          buf = str[0, 512 - @bytes]
+          @digest << buf
+          @bytes += buf.length
+        end
+      else
+        @digest << str
+      end
+    end
+  end
+
+  private_class_method
 
   # Perform an incremental checksum on a file.
   def checksum_file(digest, filename, lite = false)
@@ -145,4 +230,10 @@ module Puppet::Util::Checksums
 
     digest.hexdigest
   end
+
+  def checksum_stream(digest, block, lite = false)
+    block.call(DigestLite.new(digest, lite))
+    digest.hexdigest
+  end
+
 end

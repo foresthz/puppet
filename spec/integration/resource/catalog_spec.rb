@@ -1,11 +1,9 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 describe Puppet::Resource::Catalog do
-  describe "when pson is available", :if => Puppet.features.pson? do
-    it "should support pson" do
-      Puppet::Resource::Catalog.supported_formats.should be_include(:pson)
-    end
+  it "should support pson" do
+    expect(Puppet::Resource::Catalog.supported_formats).to be_include(:pson)
   end
 
   describe "when using the indirector" do
@@ -23,8 +21,8 @@ describe Puppet::Resource::Catalog do
       terminus = Puppet::Resource::Catalog.indirection.terminus(:yaml)
       terminus.expects(:path).with("me").returns "/my/yaml/file"
 
-      FileTest.expects(:exist?).with("/my/yaml/file").returns false
-      Puppet::Resource::Catalog.indirection.find("me").should be_nil
+      Puppet::FileSystem.expects(:exist?).with("/my/yaml/file").returns false
+      expect(Puppet::Resource::Catalog.indirection.find("me")).to be_nil
     end
 
     it "should be able to delegate to the :compiler terminus" do
@@ -39,7 +37,7 @@ describe Puppet::Resource::Catalog do
       Puppet::Node.indirection.expects(:find).returns(node)
       compiler.expects(:compile).with(node).returns nil
 
-      Puppet::Resource::Catalog.indirection.find("me").should be_nil
+      expect(Puppet::Resource::Catalog.indirection.find("me")).to be_nil
     end
 
     it "should pass provided node information directly to the terminus" do
@@ -48,6 +46,7 @@ describe Puppet::Resource::Catalog do
       Puppet::Resource::Catalog.indirection.stubs(:terminus).returns terminus
 
       node = mock 'node'
+      terminus.stubs(:validate)
       terminus.expects(:find).with { |request| request.options[:use_node] == node }
       Puppet::Resource::Catalog.indirection.find("me", :use_node => node)
     end

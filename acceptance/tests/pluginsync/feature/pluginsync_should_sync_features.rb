@@ -1,10 +1,11 @@
 test_name "the pluginsync functionality should sync feature definitions"
 
 #
-# This test is intended to ensure that pluginsync syncs feature definitions to the agents.  It checks the feature
-# twice; once to make sure that it gets loaded successfully during the run in which it was synced, and once to
-# ensure that it still gets loaded successfully during the subsequent run (in which it should not be synced because
-# the files haven't changed.)
+# This test is intended to ensure that pluginsync syncs feature definitions to
+# the agents.  It checks the feature twice; once to make sure that it gets
+# loaded successfully during the run in which it was synced, and once to ensure
+# that it still gets loaded successfully during the subsequent run (in which it
+# should not be synced because the files haven't changed.)
 #
 
 
@@ -23,7 +24,8 @@ all_tests_passed = false
 
 # create some vars to point to the directories that we're going to point the master/agents at
 test_identifier = "pluginsync_should_sync_features"
-master_module_dir = "master_modules"
+environments_dir = "environments"
+master_module_dir = "#{environments_dir}/production/modules"
 agent_lib_dir = "agent_lib"
 
 module_name = "superbogus"
@@ -34,7 +36,7 @@ agent_module_type_file = "#{agent_lib_dir}/puppet/type/#{module_name}.rb"
 master_module_type_file = "#{master_module_dir}/#{module_name}/lib/puppet/type/#{module_name}.rb"
 master_module_type_content = <<HERE
 module Puppet
-  newtype(:#{module_name}) do
+  Type.newtype(:#{module_name}) do
     newparam(:name) do
       isnamevar
     end
@@ -66,7 +68,7 @@ HERE
 
 
 # manifest file for the master, does nothing but instantiate our custom type
-master_manifest_dir = "master_manifest"
+master_manifest_dir = "#{environments_dir}/production/manifests"
 master_manifest_file = "#{master_manifest_dir}/site.pp"
 master_manifest_content = <<HERE
 #{module_name} { "This is the title of the #{module_name} type instance in site.pp":
@@ -116,10 +118,13 @@ begin
 
   step "start the master" do
 
-    with_master_running_on(master,
-               "--manifest=\"#{get_test_file_path(master, master_manifest_file)}\" " +
-               "--modulepath=\"#{get_test_file_path(master, master_module_dir)}\" " +
-               "--autosign true --pluginsync") do
+    master_opts = {
+      'main' => {
+        'environmentpath' => "#{get_test_file_path(master, environments_dir)}",
+      },
+    }
+
+    with_puppet_running_on master, master_opts do
 
       # the module files shouldn't exist on the agent yet because they haven't been synced
       step "verify that the module files don't exist on the agent path" do
@@ -135,7 +140,7 @@ begin
 
       step "run the agent and verify that it loaded the feature" do
         agents.each do |agent|
-          run_agent_on(agent, agent_args % get_test_file_path(agent, agent_lib_dir),
+          on(agent, puppet('agent', agent_args % get_test_file_path(agent, agent_lib_dir)),
                        :acceptable_exit_codes => agent_exit_codes) do
             assert_match(/The value of the #{module_name} feature is: true/, result.stdout,
               "Expected agent stdout to include confirmation that the feature was 'true'")
@@ -155,7 +160,7 @@ begin
 
       step "run the agent again" do
         agents.each do |agent|
-          run_agent_on(agent, agent_args % get_test_file_path(agent, agent_lib_dir),
+          on(agent, puppet('agent', agent_args % get_test_file_path(agent, agent_lib_dir)),
                           :acceptable_exit_codes => agent_exit_codes) do
             assert_match(/The value of the #{module_name} feature is: true/, result.stdout,
                          "Expected agent stdout to include confirmation that the feature was 'true'")
@@ -185,5 +190,3 @@ ensure
     remove_temp_dirs()
   end
 end
-
-

@@ -1,3 +1,5 @@
+require 'etc'
+
 module Puppet
   module Util
     class RunMode
@@ -5,12 +7,15 @@ module Puppet
         @name = name.to_sym
       end
 
-      @@run_modes = Hash.new {|h, k| h[k] = RunMode.new(k)}
-
       attr :name
 
       def self.[](name)
-        @@run_modes[name]
+        @run_modes ||= {}
+        if Puppet.features.microsoft_windows?
+          @run_modes[name] ||= WindowsRunMode.new(name)
+        else
+          @run_modes[name] ||= UnixRunMode.new(name)
+        end
       end
 
       def master?
@@ -25,48 +30,77 @@ module Puppet
         name == :user
       end
 
-
-      def conf_dir
-        which_dir(
-            Puppet::Settings.default_global_config_dir,
-            Puppet::Settings.default_user_config_dir
-        )
-      end
-
-      def var_dir
-        which_dir(
-            Puppet::Settings.default_global_var_dir,
-            Puppet::Settings.default_user_var_dir
-        )
-      end
-
       def run_dir
-        "$vardir/run"
+        RunMode[name].run_dir
       end
 
       def log_dir
-        "$vardir/log"
+        RunMode[name].log_dir
       end
 
       private
 
-      def which_dir( global, user )
-        #FIXME: we should test if we're user "puppet"
-        #       there's a comment that suggests that we do that
-        #       and we currently don't.
-        expand_path case
-          when name == :master; global
-          when Puppet.features.root?; global
-          else user
-        end
+      ##
+      # select the system or the user directory depending on the context of
+      # this process.  The most common use is determining filesystem path
+      # values for confdir and vardir.  The intended semantics are:
+      # {http://projects.puppetlabs.com/issues/16637 #16637} for Puppet 3.x
+      #
+      # @todo this code duplicates {Puppet::Settings#which\_configuration\_file}
+      #   as described in {http://projects.puppetlabs.com/issues/16637 #16637}
+      def which_dir( system, user )
+        File.expand_path(if Puppet.features.root? then system else user end)
+      end
+    end
+
+    class UnixRunMode < RunMode
+      def conf_dir
+        which_dir("/etc/puppetlabs/puppet", "~/.puppet")
       end
 
-      def expand_path( dir )
-        require 'etc'
-        ENV["HOME"] ||= Etc.getpwuid(Process.uid).dir
-        File.expand_path(dir)
+      def code_dir
+        which_dir("/etc/puppetlabs/code", "~/.puppet/code")
       end
 
+      def var_dir
+        which_dir("/opt/puppetlabs/puppet/cache", "~/.puppet/var")
+      end
+
+      def run_dir
+        which_dir("/var/run/puppetlabs", "~/.puppet/var/run")
+      end
+
+      def log_dir
+        which_dir("/var/log/puppetlabs", "~/.puppet/var/log")
+      end
+    end
+
+    class WindowsRunMode < RunMode
+      def conf_dir
+        which_dir(File.join(windows_common_base("puppet/etc")), "~/.puppet")
+      end
+
+      def code_dir
+        which_dir(File.join(windows_common_base("code")), "~/.puppet/code")
+      end
+
+      def var_dir
+        which_dir(File.join(windows_common_base("puppet/cache")), "~/.puppet/var")
+      end
+
+      def run_dir
+        which_dir(File.join(windows_common_base("puppet/var/run")), "~/.puppet/var/run")
+      end
+
+      def log_dir
+        which_dir(File.join(windows_common_base("puppet/var/log")), "~/.puppet/var/log")
+      end
+
+    private
+
+      def windows_common_base(*extra)
+        [Dir::COMMON_APPDATA, "PuppetLabs"] + extra
+      end
     end
   end
 end

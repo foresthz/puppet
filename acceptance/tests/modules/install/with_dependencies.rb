@@ -1,25 +1,32 @@
-begin test_name "puppet module install (with dependencies)"
+test_name "puppet module install (with dependencies)"
+require 'puppet/acceptance/module_utils'
+extend Puppet::Acceptance::ModuleUtils
+
+hosts.each do |host|
+  skip_test "skip tests requiring forge certs on solaris and aix" if host['platform'] =~ /solaris/
+end
+
+module_author = "pmtacceptance"
+module_name   = "java"
+module_dependencies   = ["stdlub"]
+
+orig_installed_modules = get_installed_modules_for_hosts hosts
+teardown do
+  rm_installed_modules_from_hosts orig_installed_modules, (get_installed_modules_for_hosts hosts)
+end
 
 step 'Setup'
-require 'resolv'; ip = Resolv.getaddress('forge-dev.puppetlabs.lan')
-apply_manifest_on master, "host { 'forge.puppetlabs.com': ip => '#{ip}' }"
-apply_manifest_on master, "file { ['/etc/puppet/modules', '/usr/share/puppet/modules']: ensure => directory, recurse => true, purge => true, force => true }"
+
+stub_forge_on(master)
 
 step "Install a module with dependencies"
-on master, puppet("module install pmtacceptance-java") do
-  assert_output <<-OUTPUT
-    Preparing to install into /etc/puppet/modules ...
-    Downloading from http://forge.puppetlabs.com ...
-    Installing -- do not interrupt ...
-    /etc/puppet/modules
-    └─┬ pmtacceptance-java (\e[0;36mv1.7.1\e[0m)
-      └── pmtacceptance-stdlib (\e[0;36mv1.0.0\e[0m)
-  OUTPUT
+on master, puppet("module install #{module_author}-#{module_name}") do
+  assert_module_installed_ui(stdout, module_author, module_name)
+  module_dependencies.each do |dependency|
+    assert_module_installed_ui(stdout, module_author, dependency)
+  end
 end
-on master, '[ -d /etc/puppet/modules/java ]'
-on master, '[ -d /etc/puppet/modules/stdlib ]'
-
-ensure step "Teardown"
-apply_manifest_on master, "host { 'forge.puppetlabs.com': ensure => absent }"
-apply_manifest_on master, "file { ['/etc/puppet/modules', '/usr/share/puppet/modules']: ensure => directory, recurse => true, purge => true, force => true }"
+assert_module_installed_on_disk(master, module_name)
+module_dependencies.each do |dependency|
+  assert_module_installed_on_disk(master, dependency)
 end

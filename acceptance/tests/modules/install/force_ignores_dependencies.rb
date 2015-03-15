@@ -1,40 +1,39 @@
-begin test_name "puppet module install (force ignores dependencies)"
+test_name "puppet module install (force ignores dependencies)"
+require 'puppet/acceptance/module_utils'
+extend Puppet::Acceptance::ModuleUtils
+
+hosts.each do |host|
+  skip_test "skip tests requiring forge certs on solaris and aix" if host['platform'] =~ /solaris/
+end
+
+module_author = "pmtacceptance"
+module_name   = "git"
+module_dependencies   = ["apache"]
+
+orig_installed_modules = get_installed_modules_for_hosts hosts
+teardown do
+  rm_installed_modules_from_hosts orig_installed_modules, (get_installed_modules_for_hosts hosts)
+end
 
 step 'Setup'
-require 'resolv'; ip = Resolv.getaddress('forge-dev.puppetlabs.lan')
-apply_manifest_on master, "host { 'forge.puppetlabs.com': ip => '#{ip}' }"
-apply_manifest_on master, "file { ['/etc/puppet/modules', '/usr/share/puppet/modules']: ensure => directory, recurse => true, purge => true, force => true }"
+
+stub_forge_on(master)
 
 step "Try to install an unsatisfiable module"
-on master, puppet("module install pmtacceptance-php"), :acceptable_exit_codes => [1] do
-  assert_output <<-OUTPUT
-    STDOUT> Preparing to install into /etc/puppet/modules ...
-    STDOUT> Downloading from http://forge.puppetlabs.com ...
-    STDERR> \e[1;31mError: Could not install module 'pmtacceptance-php' (latest: v0.0.2)
-    STDERR>   No version of 'pmtacceptance-php' will satisfy dependencies
-    STDERR>     You specified 'pmtacceptance-php' (latest: v0.0.2),
-    STDERR>     which depends on 'pmtacceptance-apache' (v0.0.1),
-    STDERR>     which depends on 'pmtacceptance-php' (v0.0.1)
-    STDERR>     Use `puppet module install --force` to install this module anyway\e[0m
-  OUTPUT
+on master, puppet("module install #{module_author}-#{module_name}"), :acceptable_exit_codes => [1] do
+  assert_match(/No version of '#{module_author}-#{module_name}' can satisfy all dependencies/, stderr,
+    "Error that module dependencies could not be met was not displayed")
 end
-on master, '[ ! -d /etc/puppet/modules/php ]'
-on master, '[ ! -d /etc/puppet/modules/apache ]'
+assert_module_not_installed_on_disk(master, module_name)
+module_dependencies.each do |dependency|
+  assert_module_not_installed_on_disk(master, dependency)
+end
 
 step "Install an unsatisfiable module with force"
-on master, puppet("module install pmtacceptance-php --force") do
-  assert_output <<-OUTPUT
-    Preparing to install into /etc/puppet/modules ...
-    Downloading from http://forge.puppetlabs.com ...
-    Installing -- do not interrupt ...
-    /etc/puppet/modules
-    └── pmtacceptance-php (\e[0;36mv0.0.2\e[0m)
-  OUTPUT
+on master, puppet("module install #{module_author}-#{module_name} --force") do
+  assert_module_installed_ui(stdout, module_author, module_name)
 end
-on master, '[ -d /etc/puppet/modules/php ]'
-on master, '[ ! -d /etc/puppet/modules/apache ]'
-
-ensure step "Teardown"
-apply_manifest_on master, "host { 'forge.puppetlabs.com': ensure => absent }"
-apply_manifest_on master, "file { '/etc/puppet/modules': recurse => true, purge => true, force => true }"
+assert_module_installed_on_disk(master, module_name)
+module_dependencies.each do |dependency|
+  assert_module_not_installed_on_disk(master, dependency)
 end

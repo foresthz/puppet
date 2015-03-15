@@ -1,35 +1,27 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 provider_class = Puppet::Type.type(:user).provider(:ldap)
 
 describe provider_class do
   it "should have the Ldap provider class as its baseclass" do
-    provider_class.superclass.should equal(Puppet::Provider::Ldap)
+    expect(provider_class.superclass).to equal(Puppet::Provider::Ldap)
   end
 
   it "should manage :posixAccount and :person objectclasses" do
-    provider_class.manager.objectclasses.should == [:posixAccount, :person]
+    expect(provider_class.manager.objectclasses).to eq([:posixAccount, :person])
   end
 
   it "should use 'ou=People' as its relative base" do
-    provider_class.manager.location.should == "ou=People"
+    expect(provider_class.manager.location).to eq("ou=People")
   end
 
   it "should use :uid as its rdn" do
-    provider_class.manager.rdn.should == :uid
+    expect(provider_class.manager.rdn).to eq(:uid)
   end
 
   it "should be able to manage passwords" do
-    provider_class.should be_manages_passwords
-  end
-
-  it "should use the ldap group provider to convert group names to numbers" do
-    provider = provider_class.new(:name => "foo")
-    Puppet::Type.type(:group).provider(:ldap).expects(:name2id).with("bar").returns 10
-
-    provider.gid = 'bar'
-    provider.gid.should == 10
+    expect(provider_class).to be_manages_passwords
   end
 
   {:name => "uid",
@@ -41,7 +33,7 @@ describe provider_class do
     :shell => "loginShell"
   }.each do |puppet, ldap|
     it "should map :#{puppet.to_s} to '#{ldap}'" do
-      provider_class.manager.ldap_name(puppet).should == ldap
+      expect(provider_class.manager.ldap_name(puppet)).to eq(ldap)
     end
   end
 
@@ -53,10 +45,13 @@ describe provider_class do
     end
 
     it "should generate the sn as the last field of the cn" do
+      Puppet::Type.type(:group).provider(:ldap).expects(:name2id).with(["whatever"]).returns [123]
+
       resource = stub 'resource', :should => %w{whatever}
       resource.stubs(:should).with(:comment).returns ["Luke Kanies"]
       resource.stubs(:should).with(:ensure).returns :present
       instance = provider_class.new(:name => "luke", :ensure => :absent)
+
       instance.stubs(:resource).returns resource
 
       @connection.expects(:add).with { |dn, attrs| attrs["sn"] == ["Kanies"] }
@@ -65,8 +60,25 @@ describe provider_class do
       instance.flush
     end
 
+    it "should translate a group name to the numeric id" do
+      Puppet::Type.type(:group).provider(:ldap).expects(:name2id).with("bar").returns 101
+
+      resource = stub 'resource', :should => %w{whatever}
+      resource.stubs(:should).with(:gid).returns 'bar'
+      resource.stubs(:should).with(:ensure).returns :present
+      instance = provider_class.new(:name => "luke", :ensure => :absent)
+      instance.stubs(:resource).returns resource
+
+      @connection.expects(:add).with { |dn, attrs| attrs["gidNumber"] == ["101"] }
+
+      instance.create
+      instance.flush
+    end
+
     describe "with no uid specified" do
       it "should pick the first available UID after the largest existing UID" do
+        Puppet::Type.type(:group).provider(:ldap).expects(:name2id).with(["whatever"]).returns [123]
+
         low = {:name=>["luke"], :shell=>:absent, :uid=>["600"], :home=>["/h"], :gid=>["1000"], :password=>["blah"], :comment=>["l k"]}
         high = {:name=>["testing"], :shell=>:absent, :uid=>["640"], :home=>["/h"], :gid=>["1000"], :password=>["blah"], :comment=>["t u"]}
         provider_class.manager.expects(:search).returns([low, high])
@@ -84,6 +96,8 @@ describe provider_class do
       end
 
       it "should pick 501 of no users exist" do
+        Puppet::Type.type(:group).provider(:ldap).expects(:name2id).with(["whatever"]).returns [123]
+
         provider_class.manager.expects(:search).returns nil
 
         resource = stub 'resource', :should => %w{whatever}
@@ -118,7 +132,7 @@ describe provider_class do
 
       @instance.flush
 
-      @instance.uid.should == :absent
+      expect(@instance.uid).to eq(:absent)
     end
 
     it "should empty the ldap property hash" do
@@ -126,7 +140,7 @@ describe provider_class do
 
       @instance.flush
 
-      @instance.ldap_properties[:uid].should be_nil
+      expect(@instance.ldap_properties[:uid]).to be_nil
     end
   end
 
@@ -144,20 +158,20 @@ describe provider_class do
       two = {:name => "two"}
       @group_manager.expects(:search).with("memberUid=myname").returns([two, one])
 
-      @instance.groups.should == "one,two"
+      expect(@instance.groups).to eq("one,two")
     end
 
     it "should show its group membership as :absent if no matching groups are found in ldap" do
       @group_manager.expects(:search).with("memberUid=myname").returns(nil)
 
-      @instance.groups.should == :absent
+      expect(@instance.groups).to eq(:absent)
     end
 
     it "should cache the group value" do
       @group_manager.expects(:search).with("memberUid=myname").once.returns nil
 
       @instance.groups
-      @instance.groups.should == :absent
+      expect(@instance.groups).to eq(:absent)
     end
   end
 
@@ -181,7 +195,7 @@ describe provider_class do
     it "should fail if the group does not exist" do
       @group_manager.expects(:find).with("mygroup").returns nil
 
-      lambda { @instance.groups = "mygroup" }.should raise_error(Puppet::Error)
+      expect { @instance.groups = "mygroup" }.to raise_error(Puppet::Error)
     end
 
     it "should only pass the attributes it cares about to the group manager" do

@@ -9,52 +9,63 @@ class Puppet::Node
   # the node sources.
   extend Puppet::Indirector
 
-  # Adds the environment getter and setter, with some instance/string conversion
-  include Puppet::Node::Environment::Helper
-
   # Use the node source as the indirection terminus.
   indirects :node, :terminus_setting => :node_terminus, :doc => "Where to find node information.
     A node is composed of its name, its facts, and its environment."
 
-  attr_accessor :name, :classes, :source, :ipaddress, :parameters
+  attr_accessor :name, :classes, :source, :ipaddress, :parameters, :trusted_data, :environment_name
   attr_reader :time, :facts
-  #
-  # Load json before trying to register.
-  Puppet.features.pson? and ::PSON.register_document_type('Node',self)
 
-  def self.from_pson(pson)
-    raise ArgumentError, "No name provided in pson data" unless name = pson['name']
+  def self.from_data_hash(data)
+    raise ArgumentError, "No name provided in serialized data" unless name = data['name']
 
     node = new(name)
-    node.classes = pson['classes']
-    node.parameters = pson['parameters']
-    node.environment = pson['environment']
+    node.classes = data['classes']
+    node.parameters = data['parameters']
+    node.environment_name = data['environment']
     node
   end
 
-  def to_pson(*args)
+  def to_data_hash
     result = {
-      'document_type' => "Node",
-      'data' => {}
+      'name' => name,
+      'environment' => environment.name,
     }
-    result['data']['name'] = name
-    result['data']['classes'] = classes unless classes.empty?
-    result['data']['parameters'] = parameters unless parameters.empty?
-    result['data']['environment'] = environment.name
-
-    result.to_pson(*args)
+    result['classes'] = classes unless classes.empty?
+    result['parameters'] = parameters unless parameters.empty?
+    result
   end
 
   def environment
-    return super if @environment
+    if @environment
+      @environment
+    else
+      if env = parameters["environment"]
+        self.environment = env
+      elsif environment_name
+        self.environment = environment_name
+      else
+        # This should not be :current_environment, this is the default
+        # for a node when it has not specified its environment
+        # Tt will be used to establish what the current environment is.
+        #
+        self.environment = Puppet.lookup(:environments).get!(Puppet[:environment])
+      end
 
-    if env = parameters["environment"]
-      self.environment = env
-      return super
+      @environment
     end
+  end
 
-    # Else, return the default
-    Puppet::Node::Environment.new
+  def environment=(env)
+    if env.is_a?(String) or env.is_a?(Symbol)
+      @environment = Puppet.lookup(:environments).get!(env)
+    else
+      @environment = env
+    end
+  end
+
+  def has_environment_instance?
+    !@environment.nil?
   end
 
   def initialize(name, options = {})
@@ -85,6 +96,7 @@ class Puppet::Node
   # Merge the node facts with parameters from the node source.
   def fact_merge
     if @facts = Puppet::Node::Facts.indirection.find(name, :environment => environment)
+      @facts.sanitize
       merge(@facts.values)
     end
   rescue => detail
@@ -99,7 +111,7 @@ class Puppet::Node
       @parameters[name] = value unless @parameters.include?(name)
     end
 
-    @parameters["environment"] ||= self.environment.name.to_s if self.environment
+    @parameters["environment"] ||= self.environment.name.to_s
   end
 
   # Calculate the list of names we might use for looking
@@ -143,5 +155,12 @@ class Puppet::Node
       tmp << list[0..i].join(".")
     end
     tmp.reverse
+  end
+
+  # Ensures the data is frozen
+  #
+  def trusted_data=(data)
+    Puppet.warning("Trusted node data modified for node #{name}") unless @trusted_data.nil?
+    @trusted_data = data.freeze
   end
 end

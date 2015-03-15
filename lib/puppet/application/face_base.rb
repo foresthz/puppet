@@ -4,29 +4,28 @@ require 'optparse'
 require 'pp'
 
 class Puppet::Application::FaceBase < Puppet::Application
-  run_mode :agent
-
   option("--debug", "-d") do |arg|
-    Puppet::Util::Log.level = :debug
+    set_log_level(:debug => true)
   end
 
   option("--verbose", "-v") do |_|
-    Puppet::Util::Log.level = :info
+    set_log_level(:verbose => true)
   end
 
   option("--render-as FORMAT") do |format|
     self.render_as = format.to_sym
   end
 
-  # This seems like a bad thing; it seems like--in an ideal world--a given app/face should have one constant run mode.
-  #  This isn't currently possible because of issues relating to the certificate authority, but I've left some notes
-  #  about "run_mode" in settings.rb and defaults.rb, and if we are able to tighten up the behavior / implementation
-  #  of that setting, we might want to revisit this.  --cprice 2012-03-16
-  option("--mode RUNMODE", "-r") do |arg|
-    raise "Invalid run mode #{arg}; supported modes are user, agent, master" unless %w{user agent master}.include?(arg)
-    self.class.run_mode(arg.to_sym)
+  option("--help", "-h") do |arg|
+    if action && !@is_default_action
+      # Only invoke help on the action if it was specified, not if
+      # it was the default action.
+      puts Puppet::Face[:help, :current].help(face.name, action.name)
+    else
+      puts Puppet::Face[:help, :current].help(face.name)
+    end
+    exit
   end
-
 
   attr_accessor :face, :action, :type, :arguments, :render_as
 
@@ -97,7 +96,9 @@ class Puppet::Application::FaceBase < Puppet::Application
           unless Puppet.settings.boolean? option.name then
             # As far as I can tell, we treat non-bool options as always having
             # a mandatory argument. --daniel 2011-04-05
-            index += 1          # ...so skip the argument.
+            # ... But, the mandatory argument will not be the next item if an = is
+            # employed in the long form of the option. --jeffmccune 2012-09-18
+            index += 1 unless item =~ /^--#{option.name}=/
           end
         elsif option = find_application_argument(item) then
           index += 1 if (option[:argument] and not option[:optional])
@@ -118,6 +119,14 @@ class Puppet::Application::FaceBase < Puppet::Application
       if @action = @face.get_default_action() then
         @is_default_action = true
       else
+        # First try to handle global command line options
+        # But ignoring invalid options as this is a invalid action, and
+        # we want the error message for that instead.
+        begin
+          super
+        rescue OptionParser::InvalidOption
+        end
+
         face   = @face.name
         action = action_name.nil? ? 'default' : "'#{action_name}'"
         msg = "'#{face}' has no #{action} action.  See `puppet help #{face}`."
@@ -131,9 +140,9 @@ class Puppet::Application::FaceBase < Puppet::Application
 
     # Now we can interact with the default option code to build behaviour
     # around the full set of options we now know we support.
-    @action.options.each do |option|
-      option = @action.get_option(option) # make it the object.
-      self.class.option(*option.optparse) # ...and make the CLI parse it.
+    @action.options.each do |o|
+      o = @action.get_option(o) # make it the object.
+      self.class.option(*o.optparse) # ...and make the CLI parse it.
     end
 
     # ...and invoke our parent to parse all the command line options.
@@ -250,7 +259,7 @@ class Puppet::Application::FaceBase < Puppet::Application
   rescue SystemExit => detail
     status = detail.status
 
-  rescue Exception => detail
+  rescue => detail
     Puppet.log_exception(detail)
     Puppet.err "Try 'puppet help #{@face.name} #{@action.name}' for usage"
 

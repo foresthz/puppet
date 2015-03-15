@@ -6,7 +6,10 @@ class Puppet::SSL::Key < Puppet::SSL::Base
   wraps OpenSSL::PKey::RSA
 
   extend Puppet::Indirector
-  indirects :key, :terminus_class => :file
+  indirects :key, :terminus_class => :file, :doc => <<DOC
+    This indirection wraps an `OpenSSL::PKey::RSA object, representing a private key.
+    The indirection key is the certificate CN (generally a hostname).
+DOC
 
   # Because of how the format handler class is included, this
   # can't be in the base class.
@@ -33,7 +36,7 @@ class Puppet::SSL::Key < Puppet::SSL::Base
   end
 
   def password
-    return nil unless password_file and FileTest.exist?(password_file)
+    return nil unless password_file and Puppet::FileSystem.exist?(password_file)
 
     ::File.read(password_file)
   end

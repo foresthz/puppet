@@ -1,21 +1,36 @@
 require 'puppet/ssl'
 
-# The tedious class that does all the manipulations to the
-# certificate to correctly sign it.  Yay.
+# This class encapsulates the logic of creating and adding extensions to X509
+# certificates.
+#
+# @api private
 module Puppet::SSL::CertificateFactory
-  # How we convert from various units to the required seconds.
-  UNITMAP = {
-    "y" => 365 * 24 * 60 * 60,
-    "d" => 24 * 60 * 60,
-    "h" => 60 * 60,
-    "s" => 1
-  }
 
-  def self.build(cert_type, csr, issuer, serial)
+  # Create a new X509 certificate and add any needed extensions to the cert.
+  #
+  # @param cert_type [Symbol] The certificate type to create, which specifies
+  #   what extensions are added to the certificate.
+  #   One of (:ca, :terminalsubca, :server, :ocsp, :client)
+  # @param csr [Puppet::SSL::CertificateRequest] The signing request associated with
+  #   the certificate being created.
+  # @param issuer [OpenSSL::X509::Certificate, OpenSSL::X509::Request] An X509 CSR
+  #   if this is a self signed certificate, or the X509 certificate of the CA if
+  #   this is a CA signed certificate.
+  # @param serial [Integer] The serial number for the given certificate, which
+  #   MUST be unique for the given CA.
+  # @param ttl [String] The duration of the validity for the given certificate.
+  #   defaults to Puppet[:ca_ttl]
+  #
+  # @api public
+  #
+  # @return [OpenSSL::X509::Certificate]
+  def self.build(cert_type, csr, issuer, serial, ttl = nil)
     # Work out if we can even build the requested type of certificate.
     build_extensions = "build_#{cert_type.to_s}_extensions"
     respond_to?(build_extensions) or
       raise ArgumentError, "#{cert_type.to_s} is an invalid certificate type!"
+
+    raise ArgumentError, "Certificate TTL must be an integer" unless ttl.nil? || ttl.is_a?(Fixnum)
 
     # set up the certificate, and start building the content.
     cert = OpenSSL::X509::Certificate.new
@@ -32,7 +47,7 @@ module Puppet::SSL::CertificateFactory
     # clock fail, and better than having every cert we generate expire a day
     # before the user expected it to when they asked for "one year".
     cert.not_before = Time.now - (60*60*24)
-    cert.not_after  = Time.now + ttl
+    cert.not_after  = Time.now + (ttl || Puppet[:ca_ttl])
 
     add_extensions_to(cert, csr, issuer, send(build_extensions))
 
@@ -41,9 +56,27 @@ module Puppet::SSL::CertificateFactory
 
   private
 
+  # Add X509v3 extensions to the given certificate.
+  #
+  # @param cert [OpenSSL::X509::Certificate] The certificate to add the
+  #   extensions to.
+  # @param csr [OpenSSL::X509::Request] The CSR associated with the given
+  #   certificate, which may specify requested extensions for the given cert.
+  #   See http://tools.ietf.org/html/rfc2985 Section 5.4.2 Extension request
+  # @param issuer [OpenSSL::X509::Certificate, OpenSSL::X509::Request] An X509 CSR
+  #   if this is a self signed certificate, or the X509 certificate of the CA if
+  #   this is a CA signed certificate.
+  # @param extensions [Hash<String, Array<String> | String>] The extensions to
+  #   add to the certificate, based on the certificate type being created (CA,
+  #   server, client, etc)
+  #
+  # @api private
+  #
+  # @return [void]
   def self.add_extensions_to(cert, csr, issuer, extensions)
-    ef = OpenSSL::X509::ExtensionFactory.
-      new(cert, issuer.is_a?(OpenSSL::X509::Request) ? cert : issuer)
+    ef = OpenSSL::X509::ExtensionFactory.new
+    ef.subject_certificate = cert
+    ef.issuer_certificate  = issuer.is_a?(OpenSSL::X509::Request) ? cert : issuer
 
     # Extract the requested extensions from the CSR.
     requested_exts = csr.request_extensions.inject({}) do |hash, re|
@@ -66,36 +99,20 @@ module Puppet::SSL::CertificateFactory
     # certificate through where the CA constraint was true, though, if
     # something went wrong up there. --daniel 2011-10-11
     defaults = { "nsComment" => "Puppet Ruby/OpenSSL Internal Certificate" }
-    override = { "subjectKeyIdentifier" => "hash" }
+
+    # See http://www.openssl.org/docs/apps/x509v3_config.html
+    # for information about the special meanings of 'hash', 'keyid', 'issuer'
+    override = {
+      "subjectKeyIdentifier"   => "hash",
+      "authorityKeyIdentifier" => "keyid,issuer"
+    }
 
     exts = [defaults, requested_exts, extensions, override].
       inject({}) {|ret, val| ret.merge(val) }
 
     cert.extensions = exts.map do |oid, val|
-      val, crit = *val
-      val       = val.join(', ') unless val.is_a? String
-
-      # Enforce the X509v3 rules about subjectAltName being critical:
-      # specifically, it SHOULD NOT be critical if we have a subject, which we
-      # always do. --daniel 2011-10-18
-      crit = false if oid == "subjectAltName"
-
-      # val can be either a string, or [string, critical], and this does the
-      # right thing regardless of what we get passed.
-      ef.create_ext(oid, val, crit)
+      generate_extension(ef, oid, *val)
     end
-  end
-
-  # TTL for new certificates in seconds. If config param :ca_ttl is set,
-  # use that, otherwise use :ca_days for backwards compatibility
-  def self.ttl
-    ttl = Puppet.settings[:ca_ttl]
-
-    return ttl unless ttl.is_a?(String)
-
-    raise ArgumentError, "Invalid ca_ttl #{ttl}" unless ttl =~ /^(\d+)(y|d|h|s)$/
-
-    $1.to_i * UNITMAP[$2]
   end
 
   # Woot! We're a CA.
@@ -162,5 +179,41 @@ module Puppet::SSL::CertificateFactory
       "nsCertType"       => "client,email",
     }
   end
-end
 
+  # Generate an extension with the given OID, value, and critical state
+  #
+  # @param oid [String] The numeric value or short name of a given OID. X509v3
+  #   extensions must be passed by short name or long name, while custom
+  #   extensions may be passed by short name, long name, oid numeric OID.
+  # @param ef [OpenSSL::X509::ExtensionFactory] The extension factory to use
+  #   when generating the extension.
+  # @param val [String, Array<String>] The extension value.
+  # @param crit [true, false] Whether the given extension is critical, defaults
+  #   to false.
+  #
+  # @return [OpenSSL::X509::Extension]
+  #
+  # @api private
+  def self.generate_extension(ef, oid, val, crit = false)
+
+    val = val.join(', ') unless val.is_a? String
+
+    # Enforce the X509v3 rules about subjectAltName being critical:
+    # specifically, it SHOULD NOT be critical if we have a subject, which we
+    # always do. --daniel 2011-10-18
+    crit = false if oid == "subjectAltName"
+
+    if Puppet::SSL::Oids.subtree_of?('id-ce', oid) or Puppet::SSL::Oids.subtree_of?('id-pkix', oid)
+      # Attempt to create a X509v3 certificate extension. Standard certificate
+      # extensions may need access to the associated subject certificate and
+      # issuing certificate, so must be created by the OpenSSL::X509::ExtensionFactory
+      # which provides that context.
+      ef.create_ext(oid, val, crit)
+    else
+      # This is not an X509v3 extension which means that the extension
+      # factory cannot generate it. We need to generate the extension
+      # manually.
+      OpenSSL::X509::Extension.new(oid, OpenSSL::ASN1::UTF8String.new(val).to_der, crit)
+    end
+  end
+end

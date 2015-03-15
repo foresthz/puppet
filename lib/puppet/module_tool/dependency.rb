@@ -1,6 +1,13 @@
+require 'puppet/module_tool'
+require 'puppet/network/format_support'
+
 module Puppet::ModuleTool
 
   class Dependency
+    include Puppet::Network::FormatSupport
+    alias :to_json :to_pson
+
+    attr_reader :full_module_name, :username, :name, :version_requirement, :repository
 
     # Instantiates a new module dependency with a +full_module_name+ (e.g.
     # "myuser-mymodule"), and optional +version_requirement+ (e.g. "0.0.1") and
@@ -13,12 +20,23 @@ module Puppet::ModuleTool
       @repository = repository ? Puppet::Forge::Repository.new(repository) : nil
     end
 
-    # Return PSON representation of this data.
-    def to_pson(*args)
+    # We override Object's ==, eql, and hash so we can more easily find identical
+    # dependencies.
+    def ==(o)
+      self.hash == o.hash
+    end
+
+    alias :eql? :==
+
+    def hash
+      [@full_module_name, @version_requirement, @repository].hash
+    end
+
+    def to_data_hash
       result = { :name => @full_module_name }
       result[:version_requirement] = @version_requirement if @version_requirement && ! @version_requirement.nil?
       result[:repository] = @repository.to_s if @repository && ! @repository.nil?
-      result.to_pson(*args)
+      result
     end
   end
 end

@@ -1,178 +1,224 @@
 test_name "The source attribute"
+require 'puppet/acceptance/module_utils'
+extend Puppet::Acceptance::ModuleUtils
 
-targets = {}
+@target_file_on_windows = 'C:/windows/temp/source_attr_test'
+@target_file_on_nix     = '/tmp/source_attr_test'
+@target_dir_on_windows  = 'C:/windows/temp/source_attr_test_dir'
+@target_dir_on_nix      = '/tmp/source_attr_test_dir'
 
-agents.each do |agent|
-  targets[agent] = agent.tmpfile('source_file_test')
+checksums = [nil, 'md5', 'md5lite', 'sha256', 'sha256lite', 'ctime', 'mtime']
 
-  step "Ensure the test environment is clean"
-  on agent, "rm -f #{targets[agent]}"
+orig_installed_modules = get_installed_modules_for_hosts hosts
+teardown do
+  rm_installed_modules_from_hosts orig_installed_modules, (get_installed_modules_for_hosts hosts)
+  hosts.each do |host|
+    file_to_rm = host['platform'] =~ /windows/ ? @target_file_on_windows : @target_file_on_nix
+    dir_to_rm = host['platform'] =~ /windows/ ? @target_dir_on_windows : @target_dir_on_nix
+
+    checksums.each do |checksum_type|
+      on(host, "rm #{file_to_rm}#{checksum_type}", :acceptable_exit_codes => [0,1])
+      on(host, "rm -r #{dir_to_rm}#{checksum_type}", :acceptable_exit_codes => [0,1])
+    end
+  end
 end
+
+step "Setup - create environment and test module"
+# set directories
+testdir = master.tmpdir('file_source_attr')
+env_dir = "#{testdir}/environments"
+prod_dir = "#{env_dir}/production"
+manifest_dir = "#{prod_dir}/manifests"
+manifest_file = "#{prod_dir}/manifests/site.pp"
+module_dir = "#{prod_dir}/modules"
+test_module_dir = "#{module_dir}/source_test_module"
+test_module_manifests_dir = "#{test_module_dir}/manifests"
+test_module_files_dir = "#{test_module_dir}/files"
+mod_manifest_file = "#{test_module_manifests_dir}/init.pp"
+mod_source_file = "#{test_module_files_dir}/source_file"
+mod_source_dir = "#{test_module_files_dir}/source_dir"
+mod_source_dir_file = "#{mod_source_dir}/source_dir_file"
+
+mod_source = ' the content is present'
+
+def mod_manifest_entry(checksum_type = nil)
+  checksum = if checksum_type then "checksum => #{checksum_type}," else "" end
+  manifest = <<EOF
+  $target_file#{checksum_type} = $::kernel ? {
+    \\'windows\\' => \\'#{@target_file_on_windows}#{checksum_type}\\',
+    default   => \\'#{@target_file_on_nix}#{checksum_type}\\'
+  }
+
+  file { $target_file#{checksum_type}:
+    source => \\'puppet:///modules/source_test_module/source_file\\',
+    #{checksum}
+    ensure => present
+  }
+
+  $target_dir#{checksum_type} = $::kernel ? {
+    \\'windows\\' => \\'#{@target_dir_on_windows}#{checksum_type}\\',
+    default   => \\'#{@target_dir_on_nix}#{checksum_type}\\'
+  }
+
+  file { $target_dir#{checksum_type}:
+    source => \\'puppet:///modules/source_test_module/source_dir\\',
+    #{checksum}
+    ensure => directory,
+    recurse => true
+  }
+EOF
+  manifest
+end
+
+mod_manifest = <<EOF
+class source_test_module {
+#{checksums.collect { |checksum_type| mod_manifest_entry(checksum_type) }.join("\n")}
+}
+EOF
+
+env_manifest = <<EOF
+filebucket { \\'main\\':
+  server => \\'#{master}\\',
+  path   => false,
+}
+
+File { backup => \\'main\\' }
+
+node default {
+  include source_test_module
+}
+EOF
+
+apply_manifest_on(master, <<-MANIFEST, :catch_failures => true)
+  File {
+    ensure => directory,
+    mode => '0755',
+  }
+
+  file {
+    '#{testdir}':;
+    '#{env_dir}':;
+    '#{prod_dir}':;
+    '#{manifest_dir}':;
+    '#{module_dir}':;
+    '#{test_module_dir}':;
+    '#{test_module_manifests_dir}':;
+    '#{test_module_files_dir}':;
+  }
+
+  file { '#{mod_manifest_file}':
+    ensure => file,
+    mode => '0644',
+    content => '#{mod_manifest}',
+  }
+
+  file { '#{mod_source_file}':
+    ensure => file,
+    mode => '0644',
+    content => '#{mod_source}',
+  }
+
+  file { '#{mod_source_dir}':
+    ensure => directory,
+    mode => '0755'
+  }
+
+  file { '#{mod_source_dir_file}':
+    ensure => file,
+    mode => '0644',
+    content => '#{mod_source}',
+  }
+
+  file { '#{manifest_file}':
+    ensure => file,
+    mode => '0644',
+    content => '#{env_manifest}',
+  }
+MANIFEST
 
 step "when using a puppet:/// URI with a master/agent setup"
-modulepath = nil
-on master, puppet_master('--configprint modulepath') do
-  modulepath = stdout.split(':')[0].chomp
-end
-
-# This is unpleasant.  Because the manifest file must specify an absolute
-# path for the source property of the file resource, and because that
-# absolute path can't be the same on Windows as it is on unix, we are
-# basically forced to have two separate manifest files.  This might be
-# cleaner if it were separated into two tests, but since the actual
-# functionality that we are testing is the same I decided to keep it here
-# even though it's ugly.
-windows_source_file = File.join(modulepath, 'source_test_module', 'files', 'windows_source_file')
-windows_manifest = "/tmp/#{$$}-windows-source-test.pp"
-windows_result_file = "C:/windows/temp/#{$$}-windows-result-file"
-
-posix_source_file = File.join(modulepath, 'source_test_module', 'files', 'posix_source_file')
-posix_manifest = "/tmp/#{$$}-posix-source-test.pp"
-posix_result_file = "/tmp/#{$$}-posix-result-file"
-
-# Remove the SSL dir so we don't have cert issues
-on master, "rm -rf `puppet master --configprint ssldir`"
-on agents, "rm -rf `puppet agent --configprint ssldir`"
-
-on master, "mkdir -p #{File.dirname(windows_source_file)}"
-on master, "echo 'the content is present' > #{windows_source_file}"
-on master, "mkdir -p #{File.dirname(posix_source_file)}"
-on master, "echo 'the content is present' > #{posix_source_file}"
-
-on master, %Q[echo "file { '#{windows_result_file}': source => 'puppet:///modules/source_test_module/windows_source_file', ensure => present }" > #{windows_manifest}]
-on master, %Q[echo "file { '#{posix_result_file}': source => 'puppet:///modules/source_test_module/posix_source_file', ensure => present }" > #{posix_manifest}]
-
-# See disgusted comments above... running master once with the windows manifest
-# and then once with the posix manifest.  Could potentially get around this by
-# creating a manifest with nodes or by moving the windows bits into a separate
-# test.
-with_master_running_on master, "--autosign true --manifest #{windows_manifest} --dns_alt_names=\"puppet, $(hostname -s), $(hostname -f)\"" do
+master_opts = {
+  'main' => {
+    'environmentpath' => "#{env_dir}",
+  },
+}
+with_puppet_running_on(master, master_opts, testdir) do
   agents.each do |agent|
-    next unless agent['platform'].include?('windows')
-    run_agent_on agent, "--test --server #{master}", :acceptable_exit_codes => [2] do
-      on agent, "cat #{windows_result_file}" do
-        assert_match(/the content is present/, stdout, "Result file not created")
+    # accept an exit code of 2 which is returned if there are changes
+    step "create file the first run"
+    on(agent, puppet('agent', "--test --server #{master}"), :acceptable_exit_codes => [0,2]) do
+      file_to_check = agent['platform'] =~ /windows/ ? @target_file_on_windows : @target_file_on_nix
+      dir_to_check = agent['platform'] =~ /windows/ ? @target_dir_on_windows : @target_dir_on_nix
+
+      checksums.each do |checksum_type|
+        on agent, "cat #{file_to_check}#{checksum_type}" do
+          assert_match(/the content is present/, stdout, "Result file not created")
+        end
+
+        on agent, "cat #{dir_to_check}#{checksum_type}/source_dir_file" do
+          assert_match(/the content is present/, stdout, "Result file not created")
+        end
+      end
+    end
+
+    step "second run should not update file"
+    on(agent, puppet('agent', "--test --server #{master}")) do
+      assert_no_match(/content changed/, stdout, "Shouldn't have overwrote any files")
+    end
+  end
+
+  step "touch files and verify they're updated with ctime/mtime"
+  sleep(1)
+  on master, "touch #{mod_source_file} #{mod_source_dir_file}"
+  agents.each do |agent|
+    on(agent, puppet('agent', "--test --server #{master}"), :acceptable_exit_codes => [0,2]) do
+      file_to_check = agent['platform'] =~ /windows/ ? @target_file_on_windows : @target_file_on_nix
+      dir_to_check = agent['platform'] =~ /windows/ ? @target_dir_on_windows : @target_dir_on_nix
+      ['ctime', 'mtime'].each do |time_type|
+        assert_match(/File\[#{file_to_check}#{time_type}\]\/content: content changed/, stdout, "Should have updated files")
+        assert_match(/File\[#{dir_to_check}#{time_type}\/source_dir_file\]\/content: content changed/, stdout, "Should have updated files")
       end
     end
   end
 end
 
-  #run_agent_on agents, "--test --server #{master}", :acceptable_exit_codes => [2] do
-  #  on agents, "cat #{result_file}" do
-  #    assert_match(/the content is present/, stdout, "Result file not created")
-  #  end
-  #end
-
-with_master_running_on master, "--autosign true --manifest #{posix_manifest} --dns_alt_names=\"puppet, $(hostname -s), $(hostname -f)\"" do
-  agents.each do |agent|
-    next if agent['platform'].include?('windows')
-    run_agent_on agent, "--test --server #{master}", :acceptable_exit_codes => [2] do
-      on agent, "cat #{posix_result_file}" do
-        assert_match(/the content is present/, stdout, "Result file not created")
-      end
-    end
-  end
-end
-
+new_mod_manifest = <<EOF
+class source_test_module {
+#{mod_manifest_entry}
+}
+EOF
+apply_manifest_on(master, <<-MANIFEST, :catch_failures => true)
+  file { '#{mod_manifest_file}':
+    ensure => file,
+    mode => '0644',
+    content => '#{new_mod_manifest}',
+  }
+MANIFEST
 
 # TODO: Add tests for puppet:// URIs with multi-master/agent setups.
-# step "when using a puppet://$server/ URI with a master/agent setup"
-
+step "when using a puppet://$server/ URI with a master/agent setup"
 agents.each do |agent|
-  step "Using a local file path"
-  source = agent.tmpfile('local_source_file_test')
-  on agent, "echo 'Yay, this is the local file.' > #{source}"
+  step "Setup testing local file sources"
+  a_testdir = agent.tmpdir('local_source_file_test')
 
-  manifest = "file { '#{targets[agent]}': source => '#{source}', ensure => present }"
-  apply_manifest_on agent, manifest, :trace => true
-  on agent, "cat #{targets[agent]}" do
+  source = "#{a_testdir}/source_mod/files/source"
+  target = "#{a_testdir}/target"
+
+  on agent, "mkdir -p #{File.dirname(source)}"
+  create_remote_file agent, source, 'Yay, this is the local file.'
+
+  step "Using a local file path"
+  apply_manifest_on agent, "file { '#{target}': source => '#{source}', ensure => present }"
+  on agent, "cat #{target}" do
     assert_match(/Yay, this is the local file./, stdout, "FIRST: File contents not matched on #{agent}")
   end
 
-  step "Ensure the test environment is clean"
-  on agent, "rm -f #{targets[agent]}"
-
   step "Using a puppet:/// URI with puppet apply"
-  on agent, puppet_agent("--configprint modulepath") do
-    modulepath = agent.path_split(stdout)[0]
-    modulepath = modulepath.chomp
-    on agent, "mkdir -p '#{modulepath}/test_module/files'"
-    #on agent, "echo 'Yay, this is the puppet:/// file.' > #{modulepath}/test_module/files/test_file.txt"
-    on agent, "echo 'Yay, this is the puppetfile.' > '#{modulepath}/test_module/files/test_file.txt'"
+  on agent, "rm -rf #{target}"
+
+  manifest = %{"file { '#{target}': source => 'puppet:///modules/source_mod/source', ensure => 'present' }"}
+  on agent, puppet( %{apply --modulepath=#{a_testdir} -e #{manifest}})
+  on agent, "cat #{target}" do
+    assert_match(/Yay, this is the local file./, stdout, "FIRST: File contents not matched on #{agent}")
   end
-
-  manifest = "file { '#{targets[agent]}': source => 'puppet:///modules/test_module/test_file.txt', ensure => present }"
-  apply_manifest_on agent, manifest, :trace => true
-
-  on agent, "cat #{targets[agent]}" do
-    assert_match(/Yay, this is the puppetfile./, stdout, "SECOND: File contents not matched on #{agent}")
-  end
-
-  step "Cleanup"
-  on agent, "rm -f #{targets[agent]}; rm -rf #{source}"
 end
-
-# Oops. We (Jesse & Jacob) ended up writing this before realizing that you
-# can't actually specify "source => 'http://...'".  However, we're leaving it
-# here, since there have been feature requests to support doing this.
-# -- Mon, 07 Mar 2011 16:12:56 -0800
-#
-#step "Ensure the test environment is clean"
-#on agents, 'rm -f /tmp/source_file_test.txt'
-#
-#step "when using an http:// file path"
-#
-#File.open '/tmp/puppet-acceptance-webrick-script.rb', 'w' do |file|
-#  file.puts %q{#!/usr/bin/env ruby
-#
-#require 'webrick'
-#
-#class Simple < WEBrick::HTTPServlet::AbstractServlet
-#  def do_GET(request, response)
-#    status, content_type, body = do_stuff_with(request)
-#
-#    response.status = status
-#    response['Content-Type'] = content_type
-#    response.body = body
-#  end
-#
-#  def do_stuff_with(request)
-#    return 200, "text/plain", "you got a page"
-#  end
-#end
-#
-#class SimpleTwo < WEBrick::HTTPServlet::AbstractServlet
-#  def do_GET(request, response)
-#    status, content_type, body = do_stuff_with(request)
-#
-#    response.status = status
-#    response['Content-Type'] = content_type
-#    response.body = body
-#  end
-#
-#  def do_stuff_with(request)
-#    return 200, "text/plain", "you got a different page"
-#  end
-#end
-#
-#server = WEBrick::HTTPServer.new :Port => 8081
-#trap "INT"  do server.shutdown end
-#trap "TERM" do server.shutdown end
-#trap "QUIT" do server.shutdown end
-#
-#server.mount "/", SimpleTwo
-#server.mount "/foo.txt", Simple
-#server.start
-#}
-#end
-#
-#scp_to master, '/tmp/puppet-acceptance-webrick-script.rb', '/tmp'
-#on master, "chmod +x /tmp/puppet-acceptance-webrick-script.rb && /tmp/puppet-acceptance-webrick-script.rb &"
-#
-#manifest = "file { '/tmp/source_file_test.txt': source => 'http://#{master}:8081/foo.txt', ensure => present }"
-#
-#apply_manifest_on agents, manifest
-#
-#on agents, 'test "$(cat /tmp/source_file_test.txt)" = "you got a page"'
-#
-#on master, "killall puppet-acceptance-webrick-script.rb"

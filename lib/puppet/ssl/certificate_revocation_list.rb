@@ -8,13 +8,14 @@ class Puppet::SSL::CertificateRevocationList < Puppet::SSL::Base
   wraps OpenSSL::X509::CRL
 
   extend Puppet::Indirector
-  indirects :certificate_revocation_list, :terminus_class => :file
+  indirects :certificate_revocation_list, :terminus_class => :file, :doc => <<DOC
+    This indirection wraps an `OpenSSL::X509::CRL` object, representing a certificate revocation list (CRL).
+    The indirection key is the CA name (usually literally `ca`).
+DOC
 
   # Convert a string into an instance.
   def self.from_s(string)
-    crl = new('foo') # The name doesn't matter
-    crl.content = wrapped_class.new(string)
-    crl
+    super(string, 'foo') # The name doesn't matter
   end
 
   # Because of how the format handler class is included, this
@@ -48,7 +49,7 @@ class Puppet::SSL::CertificateRevocationList < Puppet::SSL::Base
     Puppet.notice "Revoked certificate with serial #{serial}"
     time = Time.now
 
-    add_certitificate_revocation_for(serial, reason, time)
+    add_certificate_revocation_for(serial, reason, time)
     update_to_next_crl_number
     update_valid_time_range_to_start_at(time)
     sign_with(cakey)
@@ -59,16 +60,18 @@ class Puppet::SSL::CertificateRevocationList < Puppet::SSL::Base
 private
 
   def create_crl_issued_by(cert)
+    ef = OpenSSL::X509::ExtensionFactory.new(cert)
     @content = wrapped_class.new
     @content.issuer = cert.subject
+    @content.add_extension(ef.create_ext("authorityKeyIdentifier", "keyid:always"))
     @content.version = 1
   end
 
   def start_at_initial_crl_number
-    @content.extensions = [crl_number_of(0)]
+    @content.add_extension(crl_number_of(0))
   end
 
-  def add_certitificate_revocation_for(serial, reason, time)
+  def add_certificate_revocation_for(serial, reason, time)
     revoked = OpenSSL::X509::Revoked.new
     revoked.serial = serial
     revoked.time = time

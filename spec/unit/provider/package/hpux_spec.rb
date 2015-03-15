@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 provider_class = Puppet::Type.type(:package).provider(:hpux)
@@ -22,17 +22,17 @@ describe provider_class do
 
   it "should have an install method" do
     @provider = provider_class.new
-    @provider.should respond_to(:install)
+    expect(@provider).to respond_to(:install)
   end
 
   it "should have an uninstall method" do
     @provider = provider_class.new
-    @provider.should respond_to(:uninstall)
+    expect(@provider).to respond_to(:uninstall)
   end
 
   it "should have a swlist method" do
     @provider = provider_class.new
-    @provider.should respond_to(:swlist)
+    expect(@provider).to respond_to(:swlist)
   end
 
   describe "when installing" do

@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 describe "the 'tag' function" do
@@ -7,12 +7,13 @@ describe "the 'tag' function" do
   end
 
   before :each do
-    @scope = Puppet::Parser::Scope.new
-    @scope.stubs(:environment).returns(nil)
+    node     = Puppet::Node.new('localhost')
+    compiler = Puppet::Parser::Compiler.new(node)
+    @scope   = Puppet::Parser::Scope.new(compiler)
   end
 
   it "should exist" do
-    Puppet::Parser::Functions.function(:tag).should == "function_tag"
+    expect(Puppet::Parser::Functions.function(:tag)).to eq("function_tag")
   end
 
   it "should tag the resource with any provided tags" do
@@ -21,7 +22,7 @@ describe "the 'tag' function" do
 
     @scope.function_tag ["one", "two"]
 
-    resource.should be_tagged("one")
-    resource.should be_tagged("two")
+    expect(resource).to be_tagged("one")
+    expect(resource).to be_tagged("two")
   end
 end

@@ -2,6 +2,7 @@ test_name "node_name_fact should be used to determine the node name for puppet a
 
 success_message = "node_name_fact setting was correctly used to determine the node name"
 
+testdir = master.tmpdir("nodenamefact")
 node_names = []
 
 on agents, facter('kernel') do
@@ -10,20 +11,24 @@ end
 
 node_names.uniq!
 
-authfile = "/tmp/auth.conf-2128-#{$$}"
+authfile = "#{testdir}/auth.conf"
 authconf = node_names.map do |node_name|
   %Q[
-path /catalog/#{node_name}
+path /puppet/v3/catalog/#{node_name}
 auth yes
 allow *
 
-path /node/#{node_name}
+path /puppet/v3/node/#{node_name}
+auth yes
+allow *
+
+path /puppet/v3/report/#{node_name}
 auth yes
 allow *
 ]
 end.join("\n")
 
-manifest_file = "/tmp/node_name_value-test-#{$$}.pp"
+manifest_file = "#{testdir}/environments/production/manifests/manifest.pp"
 manifest = %Q[
   Exec { path => "/usr/bin:/bin" }
   node default {
@@ -38,13 +43,46 @@ manifest << node_names.map do |node_name|
   ]
 end.join("\n")
 
-create_remote_file master, authfile, authconf
-create_remote_file master, manifest_file, manifest
+apply_manifest_on(master, <<-MANIFEST, :catch_failures => true)
+  File {
+    ensure => directory,
+    mode => '0777',
+  }
 
-on master, "chmod 644 #{authfile} #{manifest_file}"
+  file {
+    '#{testdir}':;
+    '#{testdir}/environments':;
+    '#{testdir}/environments/production':;
+    '#{testdir}/environments/production/manifests':;
+  }
 
-with_master_running_on(master, "--rest_authconfig #{authfile} --manifest #{manifest_file} --daemonize --dns_alt_names=\"puppet, $(hostname -s), $(hostname -f)\" --autosign true") do
-  run_agent_on(agents, "--no-daemonize --verbose --onetime --node_name_fact kernel --server #{master}") do
+  file { '#{manifest_file}':
+    ensure => file,
+    mode => '0644',
+    content => '#{manifest}',
+  }
+
+  file { '#{authfile}':
+    ensure => file,
+    mode => '0644',
+    content => '#{authconf}',
+  }
+MANIFEST
+
+with_these_opts = {
+  'main' => {
+    'environmentpath' => "#{testdir}/environments",
+  },
+  'master' => {
+    'rest_authconfig' => "#{testdir}/auth.conf",
+    'node_terminus'   => 'plain',
+  },
+}
+
+with_puppet_running_on master, with_these_opts, testdir do
+
+  on(agents, puppet('agent', "--no-daemonize --verbose --onetime --node_name_fact kernel --server #{master}")) do
     assert_match(/defined 'message'.*#{success_message}/, stdout)
   end
+
 end

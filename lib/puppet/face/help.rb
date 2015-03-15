@@ -1,6 +1,5 @@
 require 'puppet/face'
 require 'puppet/application/face_base'
-require 'puppet/util/command_line'
 require 'puppet/util/constant_inflector'
 require 'pathname'
 require 'erb'
@@ -62,36 +61,56 @@ Puppet::Face.define(:help, '0.0.1') do
         end
       end
 
-      # Name those parameters...
+      return erb('global.erb').result(binding) if args.empty?
+
       facename, actionname = args
-
-      if facename then
-        if legacy_applications.include? facename then
-          actionname and raise ArgumentError, "Legacy subcommands don't take actions"
-          return Puppet::Application[facename].help
-        else
-          face = Puppet::Face[facename.to_sym, version]
-          actionname and action = face.get_action(actionname.to_sym)
+      if legacy_applications.include? facename then
+        if actionname then
+          raise ArgumentError, "Legacy subcommands don't take actions"
         end
-      end
-
-      case args.length
-      when 0 then
-        template = erb 'global.erb'
-      when 1 then
-        face or fail ArgumentError, "Unable to load face #{facename}"
-        template = erb 'face.erb'
-      when 2 then
-        face or fail ArgumentError, "Unable to load face #{facename}"
-        action or fail ArgumentError, "Unable to load action #{actionname} from #{face}"
-        template = erb 'action.erb'
+        return render_application_help(facename)
       else
-        fail ArgumentError, "Too many arguments to help action"
+        return render_face_help(facename, actionname, version)
       end
+    end
+  end
 
-      # Run the ERB template in our current binding, including all the local
-      # variables we established just above. --daniel 2011-04-11
-      return template.result(binding)
+  def render_application_help(applicationname)
+    return Puppet::Application[applicationname].help
+  end
+
+  def render_face_help(facename, actionname, version)
+    face, action = load_face_help(facename, actionname, version)
+    return template_for(face, action).result(binding)
+  end
+
+  def load_face_help(facename, actionname, version)
+    begin
+      face = Puppet::Face[facename.to_sym, version]
+    rescue Puppet::Error => detail
+      msg = <<-MSG
+Could not load help for the face #{facename}.
+Please check the error logs for more information.
+
+Detail: "#{detail.message}"
+      MSG
+      fail ArgumentError, msg, detail.backtrace
+    end
+    if actionname
+      action = face.get_action(actionname.to_sym)
+      if not action
+        fail ArgumentError, "Unable to load action #{actionname} from #{face}"
+      end
+    end
+
+    [face, action]
+  end
+
+  def template_for(face, action)
+    if action.nil?
+      erb('face.erb')
+    else
+      erb('action.erb')
     end
   end
 
@@ -104,23 +123,27 @@ Puppet::Face.define(:help, '0.0.1') do
 
   # Return a list of applications that are not simply just stubs for Faces.
   def legacy_applications
-    Puppet::Util::CommandLine.available_subcommands.reject do |appname|
+    Puppet::Application.available_application_names.reject do |appname|
       (is_face_app?(appname)) or (exclude_from_docs?(appname))
     end.sort
   end
 
   # Return a list of all applications (both legacy and Face applications), along with a summary
   #  of their functionality.
-  # @returns [Array] An Array of Arrays.  The outer array contains one entry per application; each
+  # @return [Array] An Array of Arrays.  The outer array contains one entry per application; each
   #  element in the outer array is a pair whose first element is a String containing the application
   #  name, and whose second element is a String containing the summary for that application.
   def all_application_summaries()
-    Puppet::Util::CommandLine.available_subcommands.sort.inject([]) do |result, appname|
+    Puppet::Application.available_application_names.sort.inject([]) do |result, appname|
       next result if exclude_from_docs?(appname)
 
       if (is_face_app?(appname))
-        face = Puppet::Face[appname, :current]
-        result << [appname, face.summary]
+        begin
+          face = Puppet::Face[appname, :current]
+          result << [appname, face.summary]
+        rescue Puppet::Error
+          result << [ "! #{appname}", "! Subcommand unavailable due to error. Check error logs." ]
+        end
       else
         result << [appname, horribly_extract_summary_from(appname)]
       end
@@ -129,7 +152,6 @@ Puppet::Face.define(:help, '0.0.1') do
 
   def horribly_extract_summary_from(appname)
     begin
-      require "puppet/application/#{appname}"
       help = Puppet::Application[appname].help.split("\n")
       # Now we find the line with our summary, extract it, and return it.  This
       # depends on the implementation coincidence of how our pages are
@@ -140,9 +162,8 @@ Puppet::Face.define(:help, '0.0.1') do
           return md[1]
         end
       end
-    rescue Exception
-      # Damn, but I hate this: we just ignore errors here, no matter what
-      # class they are.  Meh.
+    rescue StandardError
+      result << [ "! #{appname}", "! Subcommand unavailable due to error. Check error logs." ]
     end
     return ''
   end

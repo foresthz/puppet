@@ -31,7 +31,7 @@ Puppet::Type.type(:package).provide :ports, :parent => :freebsd, :source => :fre
     begin
       output = portversion(*cmd)
     rescue Puppet::ExecutionFailure
-      raise Puppet::Error.new(output)
+      raise Puppet::Error.new(output, $!)
     end
     line = output.split("\n").pop
 
@@ -44,12 +44,12 @@ Puppet::Type.type(:package).provide :ports, :parent => :freebsd, :source => :fre
     match = $2
     info = $3
 
-    unless pkgstuff =~ /^(\S+)-([^-\s]+)$/
+    unless pkgstuff =~ /^\S+-([^-\s]+)$/
       raise Puppet::Error,
         "Could not match package info '#{pkgstuff}'"
     end
 
-    name, version = $1, $2
+    version = $1
 
     if match == "=" or match == ">"
       # we're up to date or more recent

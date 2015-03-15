@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 require 'puppet/agent'
 
@@ -20,7 +20,9 @@ end
 
 describe Puppet::Agent do
   before do
-    @agent = Puppet::Agent.new(AgentTestClient)
+    Puppet::Status.indirection.stubs(:find).returns Puppet::Status.new("version" => Puppet.version)
+
+    @agent = Puppet::Agent.new(AgentTestClient, false)
 
     # So we don't actually try to hit the filesystem.
     @agent.stubs(:lock).yields
@@ -43,11 +45,11 @@ describe Puppet::Agent do
   end
 
   it "should set its client class at initialization" do
-    Puppet::Agent.new("foo").client_class.should == "foo"
+    expect(Puppet::Agent.new("foo", false).client_class).to eq("foo")
   end
 
   it "should include the Locker module" do
-    Puppet::Agent.ancestors.should be_include(Puppet::Agent::Locker)
+    expect(Puppet::Agent.ancestors).to be_include(Puppet::Agent::Locker)
   end
 
   it "should create an instance of its client class and run it when asked to run" do
@@ -67,7 +69,7 @@ describe Puppet::Agent do
     @agent.expects(:lockfile).returns(lockfile)
     lockfile.expects(:locked?).returns true
 
-    @agent.should be_running
+    expect(@agent).to be_running
   end
 
   describe "when being run" do
@@ -133,18 +135,6 @@ describe Puppet::Agent do
       @agent.run
     end
 
-    it "should use a mutex to restrict multi-threading" do
-      client = AgentTestClient.new
-      AgentTestClient.expects(:new).returns client
-
-      mutex = mock 'mutex'
-      @agent.expects(:sync).returns mutex
-
-      mutex.expects(:synchronize)
-      client.expects(:run).never # if it doesn't run, then we know our yield is what triggers it
-      @agent.run
-    end
-
     it "should use a filesystem lock to restrict multiple processes running the agent" do
       client = AgentTestClient.new
       AgentTestClient.expects(:new).returns client
@@ -159,7 +149,7 @@ describe Puppet::Agent do
       client = AgentTestClient.new
       AgentTestClient.expects(:new).returns client
 
-      client.expects(:run).with { @agent.client.should equal(client); true }
+      client.expects(:run).with { expect(@agent.client).to equal(client); true }
       @agent.run
     end
 
@@ -167,8 +157,8 @@ describe Puppet::Agent do
       client = AgentTestClient.new
       AgentTestClient.expects(:new).returns client
 
-      client.expects(:run).with("testargs")
-      @agent.run("testargs")
+      client.expects(:run).with(:pluginsync => true, :other => :options)
+      @agent.run(:other => :options)
     end
 
     it "should return the agent result" do
@@ -176,12 +166,16 @@ describe Puppet::Agent do
       AgentTestClient.expects(:new).returns client
 
       @agent.expects(:lock).returns(:result)
-      @agent.run.should == :result
+      expect(@agent.run).to eq(:result)
     end
 
-    describe "when should_fork is true" do
+    describe "when should_fork is true", :if => Puppet.features.posix? do
       before do
-        @agent.should_fork = true
+        @agent = Puppet::Agent.new(AgentTestClient, true)
+
+        # So we don't actually try to hit the filesystem.
+        @agent.stubs(:lock).yields
+
         Kernel.stubs(:fork)
         Process.stubs(:waitpid2).returns [123, (stub 'process::status', :exitstatus => 0)]
         @agent.stubs(:exit)
@@ -210,17 +204,17 @@ describe Puppet::Agent do
 
       it "should re-raise exit happening in the child" do
         Process.stubs(:waitpid2).returns [123, (stub 'process::status', :exitstatus => -1)]
-        lambda { @agent.run }.should raise_error(SystemExit)
+        expect { @agent.run }.to raise_error(SystemExit)
       end
 
       it "should re-raise NoMoreMemory happening in the child" do
         Process.stubs(:waitpid2).returns [123, (stub 'process::status', :exitstatus => -2)]
-        lambda { @agent.run }.should raise_error(NoMemoryError)
+        expect { @agent.run }.to raise_error(NoMemoryError)
       end
 
       it "should return the child exit code" do
         Process.stubs(:waitpid2).returns [123, (stub 'process::status', :exitstatus => 777)]
-        @agent.run.should == 777
+        expect(@agent.run).to eq(777)
       end
 
       it "should return the block exit code as the child exit code" do
@@ -231,16 +225,23 @@ describe Puppet::Agent do
         }
       end
     end
+
+    describe "on Windows", :if => Puppet.features.microsoft_windows? do
+      it "should never fork" do
+        agent = Puppet::Agent.new(AgentTestClient, true)
+        expect(agent.should_fork).to be_falsey
+      end
+    end
   end
 
   describe "when splaying" do
     before do
-      Puppet.settings.stubs(:value).with(:splay).returns true
-      Puppet.settings.stubs(:value).with(:splaylimit).returns "10"
+      Puppet[:splay] = true
+      Puppet[:splaylimit] = "10"
     end
 
     it "should do nothing if splay is disabled" do
-      Puppet.settings.expects(:value).returns false
+      Puppet[:splay] = false
       @agent.expects(:sleep).never
       @agent.splay
     end
@@ -258,7 +259,7 @@ describe Puppet::Agent do
     end
 
     it "should sleep for a random portion of the splaylimit plus 1" do
-      Puppet.settings.expects(:value).with(:splaylimit).returns "50"
+      Puppet[:splaylimit] = "50"
       @agent.expects(:rand).with(51).returns 10
       @agent.expects(:sleep).with(10)
       @agent.splay
@@ -267,7 +268,7 @@ describe Puppet::Agent do
     it "should mark that it has splayed" do
       @agent.stubs(:sleep)
       @agent.splay
-      @agent.should be_splayed
+      expect(@agent).to be_splayed
     end
   end
 
@@ -281,11 +282,11 @@ describe Puppet::Agent do
       end
 
       it 'should be false for :stopping?' do
-        @agent.stopping?.should be_false
+        expect(@agent.stopping?).to be_falsey
       end
 
       it 'should be false for :needing_restart?' do
-        @agent.needing_restart?.should be_false
+        expect(@agent.needing_restart?).to be_falsey
       end
     end
 
@@ -298,11 +299,11 @@ describe Puppet::Agent do
       end
 
       it 'should be true for :stopping?' do
-        @agent.stopping?.should be_true
+        expect(@agent.stopping?).to be_truthy
       end
 
       it 'should be false for :needing_restart?' do
-        @agent.needing_restart?.should be_false
+        expect(@agent.needing_restart?).to be_falsey
       end
     end
 
@@ -315,11 +316,11 @@ describe Puppet::Agent do
       end
 
       it 'should be false for :stopping?' do
-        @agent.stopping?.should be_false
+        expect(@agent.stopping?).to be_falsey
       end
 
       it 'should be true for :needing_restart?' do
-        @agent.needing_restart?.should be_true
+        expect(@agent.needing_restart?).to be_truthy
       end
     end
   end

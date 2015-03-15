@@ -16,11 +16,7 @@ Puppet::Type.type(:service).provide :debian, :parent => :init do
   # is resolved.
   commands :invoke_rc => "/usr/sbin/invoke-rc.d"
 
-  defaultfor :operatingsystem => [:debian, :ubuntu]
-
-  def self.defpath
-    superclass.defpath
-  end
+  defaultfor :operatingsystem => :debian
 
   # Remove the symlinks
   def disable
@@ -42,8 +38,9 @@ Puppet::Type.type(:service).provide :debian, :parent => :init do
     # See x-man-page://invoke-rc.d
     if [104, 106].include?($CHILD_STATUS.exitstatus)
       return :true
-    elsif [105].include?($CHILD_STATUS.exitstatus)
-      # 105 is unknown, which generally means the the iniscript does not support query
+    elsif [101, 105].include?($CHILD_STATUS.exitstatus)
+      # 101 is action not allowed, which means we have to do the check manually.
+      # 105 is unknown, which generally means the iniscript does not support query
       # The debian policy states that the initscript should support methods of query
       # For those that do not, peform the checks manually
       # http://www.debian.org/doc/debian-policy/ch-opersys.html
@@ -58,7 +55,7 @@ Puppet::Type.type(:service).provide :debian, :parent => :init do
   end
 
   def get_start_link_count
-    Dir.glob("/etc/rc*.d/S*#{@resource[:name]}").length
+    Dir.glob("/etc/rc*.d/S??#{@resource[:name]}").length
   end
 
   def enable

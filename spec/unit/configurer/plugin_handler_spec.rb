@@ -1,62 +1,39 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 require 'puppet/configurer'
 require 'puppet/configurer/plugin_handler'
 
-class PluginHandlerTester
-  include Puppet::Configurer::PluginHandler
-  attr_accessor :environment
-end
-
 describe Puppet::Configurer::PluginHandler do
-  before do
-    @pluginhandler = PluginHandlerTester.new
+  let(:factory)       { Puppet::Configurer::DownloaderFactory.new }
+  let(:pluginhandler) { Puppet::Configurer::PluginHandler.new(factory) }
+  let(:environment)   { Puppet::Node::Environment.create(:myenv, []) }
 
+  before :each do
     # PluginHandler#load_plugin has an extra-strong rescue clause
     # this mock is to make sure that we don't silently ignore errors
     Puppet.expects(:err).never
   end
 
-  it "should have a method for downloading plugins" do
-    @pluginhandler.should respond_to(:download_plugins)
+  it "downloads plugins and facts" do
+    Puppet.features.stubs(:external_facts?).returns(true)
+
+    plugin_downloader = stub('plugin-downloader', :evaluate => [])
+    facts_downloader = stub('facts-downloader', :evaluate => [])
+
+    factory.expects(:create_plugin_downloader).returns(plugin_downloader)
+    factory.expects(:create_plugin_facts_downloader).returns(facts_downloader)
+
+    pluginhandler.download_plugins(environment)
   end
 
-  it "should have a boolean method for determining whether plugins should be downloaded" do
-    @pluginhandler.should respond_to(:download_plugins?)
-  end
+  it "skips facts if not enabled" do
+    Puppet.features.stubs(:external_facts?).returns(false)
 
-  it "should download plugins when :pluginsync is true" do
-    Puppet.settings.expects(:value).with(:pluginsync).returns true
-    @pluginhandler.should be_download_plugins
-  end
+    plugin_downloader = stub('plugin-downloader', :evaluate => [])
 
-  it "should not download plugins when :pluginsync is false" do
-    Puppet.settings.expects(:value).with(:pluginsync).returns false
-    @pluginhandler.should_not be_download_plugins
-  end
+    factory.expects(:create_plugin_downloader).returns(plugin_downloader)
+    factory.expects(:create_plugin_facts_downloader).never
 
-  it "should not download plugins when downloading is disabled" do
-    Puppet::Configurer::Downloader.expects(:new).never
-    @pluginhandler.expects(:download_plugins?).returns false
-    @pluginhandler.download_plugins
-  end
-
-  it "should use an Agent Downloader, with the name, source, destination, ignore, and environment set correctly, to download plugins when downloading is enabled" do
-    downloader = mock 'downloader'
-
-    # This is needed in order to make sure we pass on windows
-    plugindest = File.expand_path("/tmp/pdest")
-
-    Puppet[:pluginsource] = "psource"
-    Puppet[:plugindest] = plugindest
-    Puppet[:pluginsignore] = "pignore"
-
-    Puppet::Configurer::Downloader.expects(:new).with("plugin", plugindest, "psource", "pignore", "myenv").returns downloader
-
-    downloader.expects(:evaluate).returns []
-
-    @pluginhandler.environment = "myenv"
-    @pluginhandler.expects(:download_plugins?).returns true
-    @pluginhandler.download_plugins
+    pluginhandler.download_plugins(environment)
   end
 end

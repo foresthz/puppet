@@ -1,5 +1,5 @@
 module Puppet
-  newtype(:zfs) do
+  Type.newtype(:zfs) do
     @doc = "Manage zfs. Create destroy and set properties on zfs instances.
 
 **Autorequires:** If Puppet is managing the zpool at the root of this zfs
@@ -38,6 +38,10 @@ parent zfs instances, the zfs resource will autorequire them."
 
     newproperty(:copies) do
       desc "The copies property. Valid values are `1`, `2`, `3`."
+    end
+
+    newproperty(:dedup) do
+      desc "The dedup property. Valid values are `on`, `off`."
     end
 
     newproperty(:devices) do

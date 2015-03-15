@@ -6,9 +6,13 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
   desc "Ruby Gem support.  If a URL is passed via `source`, then that URL is used as the
     remote gem repository; if a source is present but is not a valid URL, it will be
     interpreted as the path to a local gem file.  If source is not present at all,
-    the gem will be installed from the default gem repositories."
+    the gem will be installed from the default gem repositories.
 
-  has_feature :versionable
+    This provider supports the `install_options` attribute, which allows command-line flags to be passed to the gem command.
+    These options should be specified as a string (e.g. '--flag'), a hash (e.g. {'--flag' => 'value'}),
+    or an array where each element is either a string or a hash."
+
+  has_feature :versionable, :install_options
 
   commands :gemcmd => "gem"
 
@@ -20,9 +24,11 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
     else
       gem_list_command << "--remote"
     end
-
+    if options[:source]
+      gem_list_command << "--source" << options[:source]
+    end
     if name = options[:justme]
-      gem_list_command << name + "$"
+      gem_list_command << "^" + name + "$"
     end
 
     begin
@@ -30,7 +36,7 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
         map {|set| gemsplit(set) }.
         reject {|x| x.nil? }
     rescue Puppet::ExecutionFailure => detail
-      raise Puppet::Error, "Could not list gems: #{detail}"
+      raise Puppet::Error, "Could not list gems: #{detail}", detail.backtrace
     end
 
     if options[:justme]
@@ -52,7 +58,7 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
       versions = $2.split(/,\s*/)
       {
         :name     => name,
-        :ensure   => versions,
+        :ensure   => versions.map{|v| v.split[0]},
         :provider => :gem
       }
     else
@@ -70,14 +76,12 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
   def install(useversion = true)
     command = [command(:gemcmd), "install"]
     command << "-v" << resource[:ensure] if (! resource[:ensure].is_a? Symbol) and useversion
-    # Always include dependencies
-    command << "--include-dependencies"
 
     if source = resource[:source]
       begin
         uri = URI.parse(source)
       rescue => detail
-        fail "Invalid source '#{uri}': #{detail}"
+        self.fail Puppet::Error, "Invalid source '#{uri}': #{detail}", detail
       end
 
       case uri.scheme
@@ -97,6 +101,8 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
       command << "--no-rdoc" << "--no-ri" << resource[:name]
     end
 
+    command += install_options if resource[:install_options]
+
     output = execute(command)
     # Apparently some stupid gem versions don't exit non-0 on failure
     self.fail "Could not install: #{output.chomp}" if output.include?("ERROR")
@@ -104,7 +110,9 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
 
   def latest
     # This always gets the latest version available.
-    hash = self.class.gemlist(:justme => resource[:name])
+    gemlist_options = {:justme => resource[:name]}
+    gemlist_options.merge!({:source => resource[:source]}) unless resource[:source].nil?
+    hash = self.class.gemlist(gemlist_options)
 
     hash[:ensure][0]
   end
@@ -119,5 +127,9 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
 
   def update
     self.install(false)
+  end
+
+  def install_options
+    join_options(resource[:install_options])
   end
 end

@@ -7,12 +7,14 @@ Puppet::Type.type(:package).provide :pkgutil, :parent => :sun, :source => :sun d
     pkgutil_bin = "/opt/csw/bin/pkgutil"
   end
 
-  confine :operatingsystem => :solaris
+  confine :osfamily => :solaris
 
-  commands :pkguti => pkgutil_bin
+  has_command(:pkguti, pkgutil_bin) do
+    environment :HOME => ENV['HOME']
+  end
 
   def self.healthcheck()
-    unless FileTest.exists?("/var/opt/csw/pkgutil/admin")
+    unless Puppet::FileSystem.exist?("/var/opt/csw/pkgutil/admin")
       Puppet.notice "It is highly recommended you create '/var/opt/csw/pkgutil/admin'."
       Puppet.notice "See /var/opt/csw/pkgutil"
     end
@@ -61,7 +63,7 @@ Puppet::Type.type(:package).provide :pkgutil, :parent => :sun, :source => :sun d
   def self.availlist
     output = pkguti ["-a"]
 
-    list = output.split("\n").collect do |line|
+    output.split("\n").collect do |line|
       next if line =~ /^common\s+package/  # header of package list
       next if noise?(line)
 

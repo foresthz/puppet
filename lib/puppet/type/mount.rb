@@ -1,12 +1,20 @@
+require 'puppet/property/boolean'
+
 module Puppet
   # We want the mount to refresh when it changes.
-  newtype(:mount, :self_refresh => true) do
+  Type.newtype(:mount, :self_refresh => true) do
     @doc = "Manages mounted filesystems, including putting mount
       information into the mount table. The actual behavior depends
       on the value of the 'ensure' parameter.
 
-      Note that if a `mount` receives an event from another resource,
-      it will try to remount the filesystems if `ensure` is set to `mounted`."
+      **Refresh:** `mount` resources can respond to refresh events (via
+      `notify`, `subscribe`, or the `~>` arrow). If a `mount` receives an event
+      from another resource **and** its `ensure` attribute is set to `mounted`,
+      Puppet will try to unmount then remount that filesystem.
+
+      **Autorequires:** If Puppet is managing any parents of a mount resource ---
+      that is, other mount points higher up in the filesystem --- the child
+      mount will autorequire them."
 
     feature :refreshable, "The provider can remount the filesystem.",
       :methods => [:remount]
@@ -15,7 +23,7 @@ module Puppet
     # call code when sync is called.
     newproperty(:ensure) do
       desc "Control what to do with this mount. Set this attribute to
-        `umounted` to make sure the filesystem is in the filesystem table
+        `unmounted` to make sure the filesystem is in the filesystem table
         but not mounted (if the filesystem is currently mounted, it will be
         unmounted).  Set it to `absent` to unmount (if necessary) and remove
         the filesystem from the fstab.  Set to `mounted` to add it to the
@@ -118,6 +126,10 @@ module Puppet
         device is supporting by the mount, including network
         devices or devices specified by UUID rather than device
         path, depending on the operating system."
+
+      validate do |value|
+        raise Puppet::Error, "device must not contain whitespace: #{value}" if value =~ /\s/
+      end
     end
 
     # Solaris specifies two devices, not just one.
@@ -128,10 +140,11 @@ module Puppet
 
       # Default to the device but with "dsk" replaced with "rdsk".
       defaultto do
-        if Facter["operatingsystem"].value == "Solaris"
-          device = @resource.value(:device)
-          if device =~ %r{/dsk/}
+        if Facter.value(:osfamily) == "Solaris"
+          if device = resource[:device] and device =~ %r{/dsk/}
             device.sub(%r{/dsk/}, "/rdsk/")
+          elsif fstype = resource[:fstype] and fstype == 'nfs'
+            '-'
           else
             nil
           end
@@ -139,42 +152,68 @@ module Puppet
           nil
         end
       end
+
+      validate do |value|
+        raise Puppet::Error, "blockdevice must not contain whitespace: #{value}" if value =~ /\s/
+      end
     end
 
     newproperty(:fstype) do
       desc "The mount type.  Valid values depend on the
         operating system.  This is a required option."
+
+      validate do |value|
+        raise Puppet::Error, "fstype must not contain whitespace: #{value}" if value =~ /\s/
+      end
     end
 
     newproperty(:options) do
-      desc "Mount options for the mounts, as they would
-        appear in the fstab."
+      desc "A single string containing options for the mount, as they would
+        appear in fstab. For many platforms this is a comma delimited string.
+        Consult the fstab(5) man page for system-specific details."
+
+      validate do |value|
+        raise Puppet::Error, "options must not contain whitespace: #{value}" if value =~ /\s/
+      end
     end
 
     newproperty(:pass) do
       desc "The pass in which the mount is checked."
 
       defaultto {
-        0 if @resource.managed?
+        if @resource.managed?
+          if Facter.value(:osfamily) == 'Solaris'
+            '-'
+          else
+            0
+          end
+        end
       }
     end
 
-    newproperty(:atboot) do
+    newproperty(:atboot, :parent => Puppet::Property::Boolean) do
       desc "Whether to mount the mount at boot.  Not all platforms
         support this."
+
+      def munge(value)
+        munged = super
+        if munged
+          :yes
+        else
+          :no
+        end
+      end
     end
 
     newproperty(:dump) do
       desc "Whether to dump the mount.  Not all platform support this.
-        Valid values are `1` or `0`. or `2` on FreeBSD, Default is `0`."
+        Valid values are `1` or `0` (or `2` on FreeBSD). Default is `0`."
 
-      if Facter["operatingsystem"].value == "FreeBSD"
+      if Facter.value(:operatingsystem) == "FreeBSD"
         newvalue(%r{(0|1|2)})
       else
         newvalue(%r{(0|1)})
       end
-
-      newvalue(%r{(0|1)})
 
       defaultto {
         0 if @resource.managed?
@@ -197,15 +236,13 @@ module Puppet
       desc "The mount path for the mount."
 
       isnamevar
-    end
 
-    newparam(:path) do
-      desc "The deprecated name for the mount point.  Please use `name` now."
+      validate do |value|
+        raise Puppet::Error, "name must not contain whitespace: #{value}" if value =~ /\s/
+      end
 
-      def value=(value)
-        Puppet.deprecation_warning "'path' is deprecated for mounts.  Please use 'name'."
-        @resource[:name] = value
-        super
+      munge do |value|
+        value.gsub(/^(.+?)\/*$/, '\1')
       end
     end
 
@@ -217,7 +254,7 @@ module Puppet
       newvalues(:true, :false)
       defaultto do
         case Facter.value(:operatingsystem)
-        when "FreeBSD", "Darwin", "AIX"
+        when "FreeBSD", "Darwin", "AIX", "DragonFly", "OpenBSD"
           false
         else
           true
@@ -231,11 +268,20 @@ module Puppet
     end
 
     def value(name)
-      name = symbolize(name)
-      ret = nil
+      name = name.intern
       if property = @parameters[name]
         return property.value
       end
     end
+
+    # Ensure that mounts higher up in the filesystem are mounted first
+    autorequire(:mount) do
+      dependencies = []
+      Pathname.new(@parameters[:name].value).ascend do |parent|
+        dependencies.unshift parent.to_s
+      end
+      dependencies[0..-2]
+    end
+
   end
 end

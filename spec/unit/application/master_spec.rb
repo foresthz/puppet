@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/application/master'
@@ -22,19 +22,19 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
   end
 
   it "should operate in master run_mode" do
-    @master.class.run_mode.name.should equal(:master)
+    expect(@master.class.run_mode.name).to equal(:master)
   end
 
   it "should declare a main command" do
-    @master.should respond_to(:main)
+    expect(@master).to respond_to(:main)
   end
 
   it "should declare a compile command" do
-    @master.should respond_to(:compile)
+    expect(@master).to respond_to(:compile)
   end
 
   it "should declare a preinit block" do
-    @master.should respond_to(:preinit)
+    expect(@master).to respond_to(:preinit)
   end
 
   describe "during preinit" do
@@ -47,26 +47,11 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
 
       @master.preinit
     end
-
-    it "should create a Puppet Daemon" do
-      Puppet::Daemon.expects(:new).returns(@daemon)
-
-      @master.preinit
-    end
-
-    it "should give ARGV to the Daemon" do
-      argv = stub 'argv'
-      ARGV.stubs(:dup).returns(argv)
-      @daemon.expects(:argv=).with(argv)
-
-      @master.preinit
-    end
-
   end
 
   [:debug,:verbose].each do |option|
     it "should declare handle_#{option} method" do
-      @master.should respond_to("handle_#{option}".to_sym)
+      expect(@master).to respond_to("handle_#{option}".to_sym)
     end
 
     it "should store argument value when calling handle_#{option}" do
@@ -106,7 +91,7 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
       @master.preinit
       @master.parse_options
 
-      Puppet[:dns_alt_names].should == "foo,bar,baz"
+      expect(Puppet[:dns_alt_names]).to eq("foo,bar,baz")
     end
 
 
@@ -129,38 +114,46 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
       expect { @master.setup }.to raise_error(Puppet::Error, /Puppet master is not supported on Microsoft Windows/)
     end
 
-    it "should set log level to debug if --debug was passed" do
-      @master.options.stubs(:[]).with(:debug).returns(true)
-      @master.setup
-      Puppet::Log.level.should == :debug
-    end
+    describe "setting up logging" do
+      it "sets the log level" do
+        @master.expects(:set_log_level)
+        @master.setup
+      end
 
-    it "should set log level to info if --verbose was passed" do
-      @master.options.stubs(:[]).with(:verbose).returns(true)
-      @master.setup
-      Puppet::Log.level.should == :info
-    end
+      describe "when the log destination is not explicitly configured" do
+        before do
+          @master.options.stubs(:[]).with(:setdest).returns false
+        end
 
-    it "should set console as the log destination if no --logdest and --daemonize" do
-      @master.stubs(:[]).with(:daemonize).returns(:false)
+        it "logs to the console when --compile is given" do
+          @master.options.stubs(:[]).with(:node).returns "default"
+          Puppet::Util::Log.expects(:newdestination).with(:console)
+          @master.setup
+        end
 
-      Puppet::Log.expects(:newdestination).with(:syslog)
+        it "logs to the console when the master is not daemonized or run with rack" do
+          Puppet::Util::Log.expects(:newdestination).with(:console)
+          Puppet[:daemonize] = false
+          @master.options.stubs(:[]).with(:rack).returns(false)
+          @master.setup
+        end
 
-      @master.setup
-    end
+        it "logs to syslog when the master is daemonized" do
+          Puppet::Util::Log.expects(:newdestination).with(:console).never
+          Puppet::Util::Log.expects(:newdestination).with(:syslog)
+          Puppet[:daemonize] = true
+          @master.options.stubs(:[]).with(:rack).returns(false)
+          @master.setup
+        end
 
-    it "should set syslog as the log destination if no --logdest and not --daemonize" do
-      Puppet::Log.expects(:newdestination).with(:syslog)
-
-      @master.setup
-    end
-
-    it "should set syslog as the log destination if --rack" do
-      @master.options.stubs(:[]).with(:rack).returns(:true)
-
-      Puppet::Log.expects(:newdestination).with(:syslog)
-
-      @master.setup
+        it "logs to syslog when the master is run with rack" do
+          Puppet::Util::Log.expects(:newdestination).with(:console).never
+          Puppet::Util::Log.expects(:newdestination).with(:syslog)
+          Puppet[:daemonize] = false
+          @master.options.stubs(:[]).with(:rack).returns(true)
+          @master.setup
+        end
+      end
     end
 
     it "should print puppet config if asked to in Puppet config" do
@@ -239,34 +232,27 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
 
     describe "the compile command" do
       before do
-        Puppet.stubs(:[]).with(:environment)
-        Puppet.stubs(:[]).with(:manifest).returns("site.pp")
+        Puppet[:manifest] = "site.pp"
         Puppet.stubs(:err)
-        @master.stubs(:jj)
-        Puppet.features.stubs(:pson?).returns true
-      end
-
-      it "should fail if pson isn't available" do
-        Puppet.features.expects(:pson?).returns false
-        lambda { @master.compile }.should raise_error
+        @master.stubs(:puts)
       end
 
       it "should compile a catalog for the specified node" do
         @master.options[:node] = "foo"
         Puppet::Resource::Catalog.indirection.expects(:find).with("foo").returns Puppet::Resource::Catalog.new
-        $stdout.stubs(:puts)
 
         expect { @master.compile }.to exit_with 0
       end
 
-      it "should convert the catalog to a pure-resource catalog and use 'jj' to pretty-print the catalog" do
+      it "should convert the catalog to a pure-resource catalog and use 'PSON::pretty_generate' to pretty-print the catalog" do
         catalog = Puppet::Resource::Catalog.new
+        PSON.stubs(:pretty_generate)
         Puppet::Resource::Catalog.indirection.expects(:find).returns catalog
 
         catalog.expects(:to_resource).returns("rescat")
 
         @master.options[:node] = "foo"
-        @master.expects(:jj).with("rescat")
+        PSON.expects(:pretty_generate).with('rescat', :allow_nan => true, :max_nesting => false)
 
         expect { @master.compile }.to exit_with 0
       end
@@ -274,14 +260,14 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
       it "should exit with error code 30 if no catalog can be found" do
         @master.options[:node] = "foo"
         Puppet::Resource::Catalog.indirection.expects(:find).returns nil
-        $stderr.expects(:puts)
+        Puppet.expects(:log_exception)
         expect { @master.compile }.to exit_with 30
       end
 
       it "should exit with error code 30 if there's a failure" do
         @master.options[:node] = "foo"
         Puppet::Resource::Catalog.indirection.expects(:find).raises ArgumentError
-        $stderr.expects(:puts)
+        Puppet.expects(:log_exception)
         expect { @master.compile }.to exit_with 30
       end
     end
@@ -296,9 +282,10 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
         Puppet::SSL::CertificateAuthority.stubs(:ca?)
         Process.stubs(:uid).returns(1000)
         Puppet.stubs(:service)
-        Puppet.stubs(:[])
+        Puppet[:daemonize] = false
         Puppet.stubs(:notice)
         Puppet.stubs(:start)
+        Puppet::Util.stubs(:chuser)
       end
 
       it "should create a Server" do
@@ -336,7 +323,7 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
       end
 
       it "should daemonize if needed" do
-        Puppet.stubs(:[]).with(:daemonize).returns(true)
+        Puppet[:daemonize] = true
 
         @daemon.expects(:daemonize)
 
@@ -367,11 +354,9 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
           @master.options.stubs(:[]).with(:rack).returns(:true)
 
           app = @master.main
-          app.should equal(@app)
+          expect(app).to equal(@app)
         end
-
       end
-
     end
   end
 end

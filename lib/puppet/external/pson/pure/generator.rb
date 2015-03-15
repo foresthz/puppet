@@ -45,8 +45,8 @@ module PSON
       string.force_encoding(Encoding::ASCII_8BIT)
       string.gsub!(/["\\\x0-\x1f]/) { MAP[$MATCH] }
       string
-    rescue Iconv::Failure => e
-      raise GeneratorError, "Caught #{e.class}: #{e}"
+    rescue => e
+      raise GeneratorError, "Caught #{e.class}: #{e}", e.backtrace
     end
   else
     def utf8_to_pson(string) # :nodoc:
@@ -58,7 +58,7 @@ module PSON
   module Pure
     module Generator
       # This class is used to create State instances, that are use to hold data
-      # while generating a PSON text from a a Ruby data structure.
+      # while generating a PSON text from a Ruby data structure.
       class State
         # Creates a State object from _opts_, which ought to be Hash to create
         # a new State instance configured by _opts_, something else to create
@@ -321,14 +321,7 @@ module PSON
         module Float
           # Returns a PSON string representation for this Float number.
           def to_pson(state = nil, *)
-            case
-            when infinite?
-              if !state || state.allow_nan?
-                to_s
-              else
-                raise GeneratorError, "#{self} not allowed in PSON"
-              end
-            when nan?
+            if infinite? || nan?
               if !state || state.allow_nan?
                 to_s
               else
@@ -366,8 +359,9 @@ module PSON
           # This method creates a raw object hash, that can be nested into
           # other data structures and will be unparsed as a raw string. This
           # method should be used, if you want to convert raw strings to PSON
-          # instead of UTF-8 strings, e. g. binary data.
+          # instead of UTF-8 strings, e.g. binary data.
           def to_pson_raw_object
+            # create_id will be ignored during deserialization
             {
               PSON.create_id  => self.class.name,
               'raw'           => self.unpack('C*'),

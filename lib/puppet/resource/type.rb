@@ -1,25 +1,24 @@
-require 'puppet/parser/parser'
+require 'puppet/parser'
 require 'puppet/util/warnings'
 require 'puppet/util/errors'
-require 'puppet/util/inline_docs'
 require 'puppet/parser/ast/leaf'
-require 'puppet/dsl'
 
+# Puppet::Resource::Type represents nodes, classes and defined types.
+#
+# It has a standard format for external consumption, usable from the
+# resource_type indirection via rest and the resource_type face. See the
+# {file:api_docs/http_resource_type.md#Schema resource type schema
+# description}.
+#
+# @api public
 class Puppet::Resource::Type
   Puppet::ResourceType = self
-  include Puppet::Util::InlineDocs
   include Puppet::Util::Warnings
   include Puppet::Util::Errors
 
   RESOURCE_KINDS = [:hostclass, :node, :definition]
 
-  # We have reached a point where we've established some naming conventions
-  #  in our documentation that don't entirely match up with our internal names
-  #  for things.  Ideally we'd change the internal representation to match the
-  #  conventions expressed in our docs, but that would be a fairly far-reaching
-  #  and risky change.  For the time being, we're settling for mapping the
-  #  internal names to the external ones (and vice-versa) during serialization
-  #  and deserialization.  These two hashes is here to help with that mapping.
+  # Map the names used in our documentation to the names used internally
   RESOURCE_KINDS_TO_EXTERNAL_NAMES = {
       :hostclass => "class",
       :node => "node",
@@ -27,8 +26,13 @@ class Puppet::Resource::Type
   }
   RESOURCE_EXTERNAL_NAMES_TO_KINDS = RESOURCE_KINDS_TO_EXTERNAL_NAMES.invert
 
-  attr_accessor :file, :line, :doc, :code, :ruby_code, :parent, :resource_type_collection
+  attr_accessor :file, :line, :doc, :code, :parent, :resource_type_collection
   attr_reader :namespace, :arguments, :behaves_like, :module_name
+
+  # Map from argument (aka parameter) names to Puppet Type
+  # @return [Hash<Symbol, Puppet::Pops::Types::PAnyType] map from name to type
+  #
+  attr_reader :argument_types
 
   # This should probably be renamed to 'kind' eventually, in accordance with the changes
   #  made for serialization and API usability (#14137).  At the moment that seems like
@@ -43,7 +47,7 @@ class Puppet::Resource::Type
   extend Puppet::Indirector
   indirects :resource_type, :terminus_class => :parser
 
-  def self.from_pson(data)
+  def self.from_data_hash(data)
     name = data.delete('name') or raise ArgumentError, "Resource Type names must be specified"
     kind = data.delete('kind') || "definition"
 
@@ -53,41 +57,22 @@ class Puppet::Resource::Type
 
     data = data.inject({}) { |result, ary| result[ary[0].intern] = ary[1]; result }
 
-    # This is a bit of a hack; when we serialize, we use the term "parameters" because that
-    #  is the terminology that we use in our documentation.  However, internally to this
-    #  class we use the term "arguments".  Ideally we'd change the implementation to be consistent
-    #  with the documentation, but that would be challenging right now because it could potentially
-    #  touch a lot of places in the code, not to mention that we already have another meaning for
-    #  "parameters" internally.  So, for now, we will simply transform the internal "arguments"
-    #  value to "parameters" when serializing, and the opposite when deserializing.
-    #     --cprice 2012-04-23
+    # External documentation uses "parameters" but the internal name
+    # is "arguments"
     data[:arguments] = data.delete(:parameters)
 
     new(type, name, data)
   end
 
-  # This method doesn't seem like it has anything to do with PSON in particular, and it shouldn't.
-  #  It's just transforming to a simple object that can be serialized and de-serialized via
-  #  any transport format.  Should probably be renamed if we get a chance to clean up our
-  #  serialization / deserialization, and there are probably many other similar methods in
-  #  other classes.
-  #  --cprice 2012-04-23
-
-  def to_pson_data_hash
+  def to_data_hash
     data = [:doc, :line, :file, :parent].inject({}) do |hash, param|
       next hash unless (value = self.send(param)) and (value != "")
       hash[param.to_s] = value
       hash
     end
 
-    # This is a bit of a hack; when we serialize, we use the term "parameters" because that
-    #  is the terminology that we use in our documentation.  However, internally to this
-    #  class we use the term "arguments".  Ideally we'd change the implementation to be consistent
-    #  with the documentation, but that would be challenging right now because it could potentially
-    #  touch a lot of places in the code, not to mention that we already have another meaning for
-    #  "parameters" internally.  So, for now, we will simply transform the internal "arguments"
-    #  value to "parameters" when serializing, and the opposite when deserializing.
-    #     --cprice 2012-04-23
+    # External documentation uses "parameters" but the internal name
+    # is "arguments"
     data['parameters'] = arguments.dup unless arguments.empty?
 
     data['name'] = name
@@ -97,19 +82,6 @@ class Puppet::Resource::Type
     end
     data['kind'] = RESOURCE_KINDS_TO_EXTERNAL_NAMES[type]
     data
-  end
-
-  # It seems wrong that we have a 'to_pson' method on this class, but not a 'to_yaml'.
-  #  As a result, if you use the REST API to retrieve one or more objects of this type,
-  #  you will receive different data if you use 'Accept: yaml' vs 'Accept: pson'.  That
-  #  seems really, really wrong.  The "Accept" header should never affect what data is
-  #  being returned--only the format of the data.  If the data itself is going to differ,
-  #  then there should be a different request URL.  Documenting the REST API becomes
-  #  a much more complex problem when the "Accept" header can change the semantics
-  #  of the response.  --cprice 2012-04-23
-
-  def to_pson(*args)
-    to_pson_data_hash.to_pson(*args)
   end
 
   # Are we a child of the passed class?  Do a recursive search up our
@@ -133,9 +105,19 @@ class Puppet::Resource::Type
 
     resource.add_edge_to_stage
 
-    code.safeevaluate(scope) if code
-
-    evaluate_ruby_code(resource, scope) if ruby_code
+    if code
+      if @match # Only bother setting up the ephemeral scope if there are match variables to add into it
+        begin
+          elevel = scope.ephemeral_level
+          scope.ephemeral_from(@match, file, line)
+          code.safeevaluate(scope)
+        ensure
+          scope.unset_ephemeral_var(elevel)
+        end
+      else
+        code.safeevaluate(scope)
+      end
+    end
   end
 
   def initialize(type, name, options = {})
@@ -152,6 +134,9 @@ class Puppet::Resource::Type
     end
 
     set_arguments(options[:arguments])
+    set_argument_types(options[:argument_types])
+
+    @match = nil
 
     @module_name = options[:module_name]
   end
@@ -161,7 +146,7 @@ class Puppet::Resource::Type
   def match(string)
     return string.to_s.downcase == name unless name_is_regex?
 
-    @name =~ string
+    @match = @name.match(string)
   end
 
   # Add code from a new instance to our code.
@@ -190,14 +175,7 @@ class Puppet::Resource::Type
       return
     end
 
-    array_class = Puppet::Parser::AST::ASTArray
-    self.code = array_class.new(:children => [self.code]) unless self.code.is_a?(array_class)
-
-    if other.code.is_a?(array_class)
-      code.children += other.code.children
-    else
-      code.children << other.code
-    end
+    self.code = Puppet::Parser::ParserFactory.code_merger.concatenate([self, other])
   end
 
   # Make an instance of the resource type, and place it in the catalog
@@ -238,8 +216,11 @@ class Puppet::Resource::Type
   end
 
   def name
-    return @name unless @name.is_a?(Regexp)
-    @name.source.downcase.gsub(/[^-\w:.]/,'').sub(/^\.+/,'')
+    if type == :node && name_is_regex?
+      "__node_regexp__#{@name.source.downcase.gsub(/[^-\w:.]/,'').sub(/^\.+/,'')}"
+    else
+      @name
+    end
   end
 
   def name_is_regex?
@@ -248,7 +229,6 @@ class Puppet::Resource::Type
 
   def assign_parameter_values(parameters, resource)
     return unless parameters
-    scope = resource.scope || {}
 
     # It'd be nice to assign default parameter values here,
     # but we can't because they often rely on local variables
@@ -258,34 +238,11 @@ class Puppet::Resource::Type
     end
   end
 
-  # MQR TODO:
-  #
-  # The change(s) introduced by the fix for #4270 are mostly silly & should be 
-  # removed, though we didn't realize it at the time.  If it can be established/
-  # ensured that nodes never call parent_type and that resource_types are always
-  # (as they should be) members of exactly one resource_type_collection the 
-  # following method could / should be replaced with:
-  #
-  # def parent_type
-  #   @parent_type ||= parent && (
-  #     resource_type_collection.find_or_load([name],parent,type.to_sym) ||
-  #     fail Puppet::ParseError, "Could not find parent resource type '#{parent}' of type #{type} in #{resource_type_collection.environment}"
-  #   )
-  # end
-  #
-  # ...and then the rest of the changes around passing in scope reverted.
-  #
   def parent_type(scope = nil)
     return nil unless parent
 
-    unless @parent_type
-      raise "Must pass scope to parent_type when called first time" unless scope
-      unless @parent_type = scope.environment.known_resource_types.send("find_#{type}", [name], parent)
-        fail Puppet::ParseError, "Could not find parent resource type '#{parent}' of type #{type} in #{scope.environment}"
-      end
-    end
-
-    @parent_type
+    @parent_type ||= scope.environment.known_resource_types.send("find_#{type}", parent) ||
+      fail(Puppet::ParseError, "Could not find parent resource type '#{parent}' of type #{type} in #{scope.environment}")
   end
 
   # Set any arguments passed by the resource as variables in the scope.
@@ -316,7 +273,7 @@ class Puppet::Resource::Type
 
     # Evaluate the default parameters, now that all other variables are set
     default_params = resource.set_default_parameters(scope)
-    default_params.each { |param| scope[param.to_s] = resource[param] }
+    default_params.each { |param| scope[param] = resource[param] }
 
     # This has to come after the above parameters so that default values
     # can use their values
@@ -344,6 +301,25 @@ class Puppet::Resource::Type
     end
   end
 
+  # Sets the argument name to Puppet Type hash used for type checking.
+  # Names must correspond to available arguments (they must be defined first).
+  # Arguments not mentioned will not be type-checked.
+  #
+  def set_argument_types(name_to_type_hash)
+    @argument_types = {}
+    return unless name_to_type_hash
+    name_to_type_hash.each do |name, t|
+      # catch internal errors
+      unless @arguments.include?(name)
+        raise Puppet::DevError, "Parameter '#{name}' is given a type, but is not a valid parameter."
+      end
+      unless t.is_a? Puppet::Pops::Types::PAnyType
+        raise Puppet::DevError, "Parameter '#{name}' is given a type that is not a Puppet Type, got #{t.class}"
+      end
+      @argument_types[name] = t
+    end
+  end
+
   private
 
   def convert_from_ast(name)
@@ -359,10 +335,6 @@ class Puppet::Resource::Type
     return unless klass = parent_type(resource.scope) and parent_resource = resource.scope.compiler.catalog.resource(:class, klass.name) || resource.scope.compiler.catalog.resource(:node, klass.name)
     parent_resource.evaluate unless parent_resource.evaluated?
     parent_scope(resource.scope, klass)
-  end
-
-  def evaluate_ruby_code(resource, scope)
-    Puppet::DSL::ResourceAPI.new(resource, scope, ruby_code).evaluate
   end
 
   # Split an fq name into a namespace and name
@@ -401,4 +373,3 @@ class Puppet::Resource::Type
     end
   end
 end
-

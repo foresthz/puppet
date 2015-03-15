@@ -60,13 +60,11 @@ module PSON
       # * *allow_nan*: If set to true, allow NaN, Infinity and -Infinity in
       #   defiance of RFC 4627 to be parsed by the Parser. This option defaults
       #   to false.
-      # * *create_additions*: If set to false, the Parser doesn't create
-      #   additions even if a matchin class and create_id was found. This option
-      #   defaults to true.
       # * *object_class*: Defaults to Hash
       # * *array_class*: Defaults to Array
       def initialize(source, opts = {})
-        super
+        source = convert_encoding source
+        super source
         if !opts.key?(:max_nesting) # defaults to 19
           @max_nesting = 19
         elsif opts[:max_nesting]
@@ -75,9 +73,6 @@ module PSON
           @max_nesting = 0
         end
         @allow_nan = !!opts[:allow_nan]
-        ca = true
-        ca = opts[:create_additions] if opts.key?(:create_additions)
-        @create_id = ca ? PSON.create_id : nil
         @object_class = opts[:object_class] || Hash
         @array_class = opts[:array_class] || Array
       end
@@ -111,6 +106,59 @@ module PSON
 
       private
 
+      def convert_encoding(source)
+        if source.respond_to?(:to_str)
+          source = source.to_str
+        else
+          raise TypeError, "#{source.inspect} is not like a string"
+        end
+        if supports_encodings?(source)
+          if source.encoding == ::Encoding::ASCII_8BIT
+            b = source[0, 4].bytes.to_a
+            source =
+              case
+              when b.size >= 4 && b[0] == 0 && b[1] == 0 && b[2] == 0
+                source.dup.force_encoding(::Encoding::UTF_32BE).encode!(::Encoding::UTF_8)
+              when b.size >= 4 && b[0] == 0 && b[2] == 0
+                source.dup.force_encoding(::Encoding::UTF_16BE).encode!(::Encoding::UTF_8)
+              when b.size >= 4 && b[1] == 0 && b[2] == 0 && b[3] == 0
+                source.dup.force_encoding(::Encoding::UTF_32LE).encode!(::Encoding::UTF_8)
+              when b.size >= 4 && b[1] == 0 && b[3] == 0
+                source.dup.force_encoding(::Encoding::UTF_16LE).encode!(::Encoding::UTF_8)
+              else
+                source.dup
+              end
+          else
+            source = source.encode(::Encoding::UTF_8)
+          end
+          source.force_encoding(::Encoding::ASCII_8BIT)
+        else
+          b = source
+          source =
+            case
+            when b.size >= 4 && b[0] == 0 && b[1] == 0 && b[2] == 0
+              PSON.encode('utf-8', 'utf-32be', b)
+            when b.size >= 4 && b[0] == 0 && b[2] == 0
+              PSON.encode('utf-8', 'utf-16be', b)
+            when b.size >= 4 && b[1] == 0 && b[2] == 0 && b[3] == 0
+              PSON.encode('utf-8', 'utf-32le', b)
+            when b.size >= 4 && b[1] == 0 && b[3] == 0
+              PSON.encode('utf-8', 'utf-16le', b)
+            else
+              b
+            end
+        end
+        source
+      end
+
+      def supports_encodings?(string)
+        # Some modules, such as REXML on 1.8.7 (see #22804) can actually create
+        # a top-level Encoding constant when they are misused. Therefore
+        # checking for just that constant is not enough, so we'll be a bit more
+        # robust about if we can actually support encoding transformations.
+        string.respond_to?(:encoding) && defined?(::Encoding)
+      end
+
       # Unescape characters in strings.
       UNESCAPE_MAP = Hash.new { |h, k| h[k] = k.chr }
 
@@ -141,7 +189,7 @@ module PSON
                 bytes << c[6 * i + 2, 2].to_i(16) << c[6 * i + 4, 2].to_i(16)
                 i += 1
               end
-              PSON::UTF16toUTF8.iconv(bytes)
+              PSON.encode('utf-8', 'utf-16be', bytes)
             end
           end
           string.force_encoding(Encoding::UTF_8) if string.respond_to?(:force_encoding)
@@ -149,8 +197,8 @@ module PSON
         else
           UNPARSED
         end
-      rescue Iconv::Failure => e
-        raise GeneratorError, "Caught #{e.class}: #{e}"
+      rescue => e
+        raise GeneratorError, "Caught #{e.class}: #{e}", e.backtrace
       end
 
       def parse_value
@@ -245,11 +293,6 @@ module PSON
             end
           when scan(OBJECT_CLOSE)
             raise ParserError, "expected next name, value pair in object at '#{peek(20)}'!" if delim
-            if @create_id and klassname = result[@create_id]
-              klass = PSON.deep_const_get klassname
-              break unless klass and klass.pson_creatable?
-              result = klass.pson_create(result)
-            end
             break
           when skip(IGNORE)
             ;

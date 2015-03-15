@@ -1,60 +1,182 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
+require 'puppet/util/rdoc'
 
-describe "RDoc::Parser", :if => Puppet.features.rdoc1? do
+describe "RDoc::Parser" do
   require 'puppet_spec/files'
   include PuppetSpec::Files
 
-  before :all do
-    require 'puppet/resource/type_collection'
-    require 'puppet/util/rdoc/parser'
-    require 'puppet/util/rdoc'
-    require 'puppet/util/rdoc/code_objects'
-    require 'rdoc/options'
-    require 'rdoc/rdoc'
+  let(:document_all) { false }
+  let(:tmp_dir) { tmpdir('rdoc_parser_tmp') }
+  let(:doc_dir) { File.join(tmp_dir, 'doc') }
+  let(:manifests_dir) { File.join(tmp_dir, 'manifests') }
+  let(:modules_dir) { File.join(tmp_dir, 'modules') }
+
+  let(:modules_and_manifests) do
+    {
+      :site => [
+        File.join(manifests_dir, 'site.pp'),
+        <<-EOF
+# The test class comment
+class test {
+  # The virtual resource comment
+  @notify { virtual: }
+  # The a_notify_resource comment
+  notify { a_notify_resource:
+    message => "a_notify_resource message"
+  }
+}
+
+# The includes_another class comment
+class includes_another {
+  include another
+}
+
+# The requires_another class comment
+class requires_another {
+  require another
+}
+
+# node comment
+node foo {
+  include test
+  $a_var = "var_value"
+  realize Notify[virtual]
+  notify { bar: }
+}
+        EOF
+      ],
+      :module_readme => [
+        File.join(modules_dir, 'a_module', 'README'),
+        <<-EOF
+The a_module README docs.
+        EOF
+      ],
+      :module_init => [
+        File.join(modules_dir, 'a_module', 'manifests', 'init.pp'),
+        <<-EOF
+# The a_module class comment
+class a_module {}
+
+class another {}
+        EOF
+      ],
+      :module_type => [
+        File.join(modules_dir, 'a_module', 'manifests', 'a_type.pp'),
+        <<-EOF
+# The a_type type comment
+define a_module::a_type() {}
+        EOF
+      ],
+      :module_plugin => [
+        File.join(modules_dir, 'a_module', 'lib', 'puppet', 'type', 'a_plugin.rb'),
+        <<-EOF
+# The a_plugin type comment
+Puppet::Type.newtype(:a_plugin) do
+  @doc = "Not presented"
+end
+        EOF
+      ],
+      :module_function => [
+        File.join(modules_dir, 'a_module', 'lib', 'puppet', 'parser', 'a_function.rb'),
+        <<-EOF
+# The a_function function comment
+module Puppet::Parser::Functions
+  newfunction(:a_function, :type => :rvalue) do
+    return
+  end
+end
+        EOF
+      ],
+      :module_fact => [
+        File.join(modules_dir, 'a_module', 'lib', 'facter', 'a_fact.rb'),
+        <<-EOF
+# The a_fact fact comment
+Facter.add("a_fact") do
+end
+        EOF
+      ],
+    }
+  end
+
+  def write_file(file, content)
+    FileUtils.mkdir_p(File.dirname(file))
+    File.open(file, 'w') do |f|
+      f.puts(content)
+    end
+  end
+
+  def prepare_manifests_and_modules
+    modules_and_manifests.each do |key,array|
+      write_file(*array)
+    end
+  end
+
+  def file_exists_and_matches_content(file, *content_patterns)
+    expect(Puppet::FileSystem.exist?(file)).to(be_truthy, "Cannot find #{file}")
+    content_patterns.each do |pattern|
+      content = File.read(file)
+      expect(content).to match(pattern)
+    end
+  end
+
+  def some_file_exists_with_matching_content(glob, *content_patterns)
+    expect(Dir.glob(glob).select do |f|
+      contents = File.read(f)
+      content_patterns.all? { |p| p.match(contents) }
+    end).not_to(be_empty, "Could not match #{content_patterns} in any of the files found in #{glob}")
+  end
+
+  around(:each) do |example|
+    env = Puppet::Node::Environment.create(:doc_test_env, [modules_dir], manifests_dir)
+    Puppet.override({:environments => Puppet::Environments::Static.new(env), :current_environment => env}) do
+      example.run
+    end
   end
 
   before :each do
-    tmpdir = tmpfile('rdoc_parser_tmp')
-    Dir.mkdir(tmpdir)
-    @parsedfile = File.join(tmpdir, 'init.pp')
+    prepare_manifests_and_modules
+    Puppet.settings[:document_all] = document_all
+    Puppet.settings[:modulepath] = modules_dir
+    Puppet::Util::RDoc.rdoc(doc_dir, [modules_dir, manifests_dir])
+  end
 
-    File.open(@parsedfile, 'w') do |f|
-      f.puts '# comment'
-      f.puts 'class ::test {}'
+  module RdocTesters
+    def has_plugin_rdoc(module_name, type, name)
+      file_exists_and_matches_content(plugin_path(module_name, type, name), /The .*?#{name}.*?\s*#{type} comment/m, /Type.*?#{type}/m)
+    end
+  end
+
+  shared_examples_for :an_rdoc_site do
+    # PUP-3274 / PUP-3638 not sure if this should be kept or not - it is now broken
+#    it "documents the __site__ module" do
+#      has_module_rdoc("__site__")
+#    end
+
+    # PUP-3274 / PUP-3638 not sure if this should be kept or not - it is now broken
+#    it "documents the a_module module" do
+#      has_module_rdoc("a_module", /The .*?a_module.*? .*?README.*?docs/m)
+#    end
+
+    it "documents the a_module::a_plugin type" do
+      has_plugin_rdoc("a_module", :type, 'a_plugin')
     end
 
-    @top_level = stub_everything 'toplevel', :file_relative_name => @parsedfile
-    @module = stub_everything 'module'
-    @puppet_top_level = RDoc::PuppetTopLevel.new(@top_level)
-    RDoc::PuppetTopLevel.stubs(:new).returns(@puppet_top_level)
-    @puppet_top_level.expects(:add_module).returns(@module)
-    @parser = RDoc::Parser.new(@top_level, @parsedfile, nil, Options.instance, RDoc::Stats.new)
+    it "documents the a_module::a_function function" do
+      has_plugin_rdoc("a_module", :function, 'a_function')
+    end
+
+    it "documents the a_module::a_fact fact" do
+      has_plugin_rdoc("a_module", :fact, 'a_fact')
+    end
   end
 
-  after(:each) do
-    File.unlink(@parsedfile)
-  end
+  describe "rdoc2 support" do
+    def module_path(module_name); "#{doc_dir}/#{module_name}.html" end
+    def plugin_path(module_name, type, name); "#{doc_dir}/#{module_name}/__#{type}s__.html" end
 
-  def get_test_class(toplevel)
-    # toplevel -> main -> test
-    toplevel.classes[0].classes[0]
-  end
+    include RdocTesters
 
-  it "should parse to RDoc data structure" do
-    @parser.expects(:document_class).with { |n,k,c| n == "::test" and k.is_a?(Puppet::Resource::Type) }
-    @parser.scan
-  end
-
-  it "should get a PuppetClass for the main class" do
-    @parser.scan.classes[0].should be_a(RDoc::PuppetClass)
-  end
-
-  it "should produce a PuppetClass whose name is test" do
-    get_test_class(@parser.scan).name.should == "test"
-  end
-
-  it "should produce a PuppetClass whose comment is 'comment'" do
-    get_test_class(@parser.scan).comment.should == "comment\n"
+    it_behaves_like :an_rdoc_site
   end
 end

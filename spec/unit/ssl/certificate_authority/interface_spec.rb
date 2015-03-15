@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/ssl/certificate_authority'
@@ -25,6 +25,33 @@ shared_examples_for "a normal interface method" do
   end
 end
 
+shared_examples_for "a destructive interface method" do
+  it "calls the method on the CA for each host specified if an array was provided" do
+    @ca.expects(@method).with("host1")
+    @ca.expects(@method).with("host2")
+
+    @applier = Puppet::SSL::CertificateAuthority::Interface.new(@method, :to => %w{host1 host2})
+
+    @applier.apply(@ca)
+  end
+
+  it "raises an error if :all was provided" do
+    @applier = Puppet::SSL::CertificateAuthority::Interface.new(@method, :to => :all)
+
+    expect {
+      @applier.apply(@ca)
+    }.to raise_error(ArgumentError, /Refusing to #{@method} all certs/)
+  end
+
+  it "raises an error if :signed was provided" do
+    @applier = Puppet::SSL::CertificateAuthority::Interface.new(@method, :to => :signed)
+
+    expect {
+      @applier.apply(@ca)
+    }.to raise_error(ArgumentError, /Refusing to #{@method} all signed certs/)
+  end
+end
+
 describe Puppet::SSL::CertificateAuthority::Interface do
   before do
     @class = Puppet::SSL::CertificateAuthority::Interface
@@ -32,22 +59,17 @@ describe Puppet::SSL::CertificateAuthority::Interface do
   describe "when initializing" do
     it "should set its method using its settor" do
       instance = @class.new(:generate, :to => :all)
-      instance.method.should == :generate
+      expect(instance.method).to eq(:generate)
     end
 
     it "should set its subjects using the settor" do
       instance = @class.new(:generate, :to => :all)
-      instance.subjects.should == :all
+      expect(instance.subjects).to eq(:all)
     end
 
     it "should set the digest if given" do
       interface = @class.new(:generate, :to => :all, :digest => :digest)
-      interface.digest.should == :digest
-    end
-
-    it "should set the digest to SHA256 if none given" do
-      interface = @class.new(:generate, :to => :all)
-      interface.digest.should == :SHA256
+      expect(interface.digest).to eq(:digest)
     end
   end
 
@@ -56,11 +78,11 @@ describe Puppet::SSL::CertificateAuthority::Interface do
       instance = @class.new(:generate, :to => :all)
       instance.method = :list
 
-      instance.method.should == :list
+      expect(instance.method).to eq(:list)
     end
 
     it "should fail if the method isn't a member of the INTERFACE_METHODS array" do
-      lambda { @class.new(:thing, :to => :all) }.should raise_error(ArgumentError, /Invalid method thing to apply/)
+      expect { @class.new(:thing, :to => :all) }.to raise_error(ArgumentError, /Invalid method thing to apply/)
     end
   end
 
@@ -69,16 +91,16 @@ describe Puppet::SSL::CertificateAuthority::Interface do
       instance = @class.new(:generate, :to => :all)
       instance.subjects = :signed
 
-      instance.subjects.should == :signed
+      expect(instance.subjects).to eq(:signed)
     end
 
     it "should fail if the subjects setting isn't :all or an array" do
-      lambda { @class.new(:generate, :to => "other") }.should raise_error(ArgumentError, /Subjects must be an array or :all; not other/)
+      expect { @class.new(:generate, :to => "other") }.to raise_error(ArgumentError, /Subjects must be an array or :all; not other/)
     end
   end
 
   it "should have a method for triggering the application" do
-    @class.new(:generate, :to => :all).should respond_to(:apply)
+    expect(@class.new(:generate, :to => :all)).to respond_to(:apply)
   end
 
   describe "when applying" do
@@ -87,35 +109,17 @@ describe Puppet::SSL::CertificateAuthority::Interface do
       @ca = Object.new
     end
 
-    it "should raise InterfaceErrors" do
-      @applier = @class.new(:revoke, :to => :all)
-
-      @ca.expects(:list).raises Puppet::SSL::CertificateAuthority::Interface::InterfaceError
-
-      lambda { @applier.apply(@ca) }.should raise_error(Puppet::SSL::CertificateAuthority::Interface::InterfaceError)
-    end
-
-    it "should log non-Interface failures rather than failing" do
-      @applier = @class.new(:revoke, :to => :all)
-
-      @ca.expects(:list).raises ArgumentError
-
-      Puppet.expects(:err)
-
-      lambda { @applier.apply(@ca) }.should_not raise_error
-    end
-
     describe "with an empty array specified and the method is not list" do
       it "should fail" do
         @applier = @class.new(:sign, :to => [])
-        lambda { @applier.apply(@ca) }.should raise_error(ArgumentError)
+        expect { @applier.apply(@ca) }.to raise_error(ArgumentError)
       end
     end
 
     describe ":generate" do
       it "should fail if :all was specified" do
         @applier = @class.new(:generate, :to => :all)
-        lambda { @applier.apply(@ca) }.should raise_error(ArgumentError)
+        expect { @applier.apply(@ca) }.to raise_error(ArgumentError)
       end
 
       it "should call :generate on the CA for each host specified" do
@@ -143,12 +147,12 @@ describe Puppet::SSL::CertificateAuthority::Interface do
 
     describe ":destroy" do
       before { @method = :destroy }
-      it_should_behave_like "a normal interface method"
+      it_should_behave_like "a destructive interface method"
     end
 
     describe ":revoke" do
       before { @method = :revoke }
-      it_should_behave_like "a normal interface method"
+      it_should_behave_like "a destructive interface method"
     end
 
     describe ":sign" do
@@ -189,7 +193,7 @@ describe Puppet::SSL::CertificateAuthority::Interface do
           @ca.stubs(:waiting?).returns([])
 
           @applier = @class.new(:sign, :to => :all)
-          lambda { @applier.apply(@ca) }.should raise_error(Puppet::SSL::CertificateAuthority::Interface::InterfaceError)
+          expect { @applier.apply(@ca) }.to raise_error(Puppet::SSL::CertificateAuthority::Interface::InterfaceError)
         end
       end
     end
@@ -205,9 +209,12 @@ describe Puppet::SSL::CertificateAuthority::Interface do
         Puppet::SSL::Certificate.indirection.stubs(:find).returns @cert
         Puppet::SSL::CertificateRequest.indirection.stubs(:find).returns @csr
 
+        @digest = mock("digest")
+        @digest.stubs(:to_s).returns("(fingerprint)")
         @ca.expects(:waiting?).returns %w{host1 host2 host3}
-        @ca.expects(:list).returns %w{host4 host5 host6}
-        @ca.stubs(:fingerprint).returns "fingerprint"
+        @ca.expects(:list).returns(%w{host4 host5 host6}).at_most(1)
+        @csr.stubs(:digest).returns @digest
+        @cert.stubs(:digest).returns @digest
         @ca.stubs(:verify)
       end
 
@@ -216,9 +223,9 @@ describe Puppet::SSL::CertificateAuthority::Interface do
           applier = @class.new(:list, :to => [])
 
           applier.expects(:puts).with(<<-OUTPUT.chomp)
-  host1 (fingerprint)
-  host2 (fingerprint)
-  host3 (fingerprint)
+  "host1" (fingerprint)
+  "host2" (fingerprint)
+  "host3" (fingerprint)
           OUTPUT
 
           applier.apply(@ca)
@@ -227,17 +234,18 @@ describe Puppet::SSL::CertificateAuthority::Interface do
 
       describe "and :all was provided" do
         it "should print a string containing all certificate requests and certificates" do
+          @ca.expects(:list).returns %w{host4 host5 host6}
           @ca.stubs(:verify).with("host4").raises(Puppet::SSL::CertificateAuthority::CertificateVerificationError.new(23), "certificate revoked")
 
           applier = @class.new(:list, :to => :all)
 
           applier.expects(:puts).with(<<-OUTPUT.chomp)
-  host1 (fingerprint)
-  host2 (fingerprint)
-  host3 (fingerprint)
-+ host5 (fingerprint)
-+ host6 (fingerprint)
-- host4 (fingerprint) (certificate revoked)
+  "host1" (fingerprint)
+  "host2" (fingerprint)
+  "host3" (fingerprint)
++ "host5" (fingerprint)
++ "host6" (fingerprint)
+- "host4" (fingerprint) (certificate revoked)
           OUTPUT
 
           applier.apply(@ca)
@@ -246,12 +254,13 @@ describe Puppet::SSL::CertificateAuthority::Interface do
 
       describe "and :signed was provided" do
         it "should print a string containing all signed certificate requests and certificates" do
+          @ca.expects(:list).returns %w{host4 host5 host6}
           applier = @class.new(:list, :to => :signed)
 
           applier.expects(:puts).with(<<-OUTPUT.chomp)
-+ host4 (fingerprint)
-+ host5 (fingerprint)
-+ host6 (fingerprint)
++ "host4" (fingerprint)
++ "host5" (fingerprint)
++ "host6" (fingerprint)
           OUTPUT
 
           applier.apply(@ca)
@@ -263,7 +272,7 @@ describe Puppet::SSL::CertificateAuthority::Interface do
           applier = @class.new(:list, :to => ['host1'])
 
           applier.expects(:puts).with(<<-OUTPUT.chomp)
-  host1 (fingerprint) (alt names: DNS:foo, DNS:bar)
+  "host1" (fingerprint) (alt names: "DNS:foo", "DNS:bar")
           OUTPUT
 
           applier.apply(@ca)
@@ -275,10 +284,10 @@ describe Puppet::SSL::CertificateAuthority::Interface do
           applier = @class.new(:list, :to => %w{host1 host2 host4 host5})
 
           applier.expects(:puts).with(<<-OUTPUT.chomp)
-  host1 (fingerprint)
-  host2 (fingerprint)
-+ host4 (fingerprint)
-+ host5 (fingerprint)
+  "host1" (fingerprint)
+  "host2" (fingerprint)
++ "host4" (fingerprint)
++ "host5" (fingerprint)
             OUTPUT
 
           applier.apply(@ca)
@@ -331,10 +340,19 @@ describe Puppet::SSL::CertificateAuthority::Interface do
     end
 
     describe ":fingerprint" do
-      it "should fingerprint with the set digest algorithm" do
-        @applier = @class.new(:fingerprint, :to => %w{host1}, :digest => :digest)
+      before(:each) do
+        @cert = Puppet::SSL::Certificate.new 'foo'
+        @csr = Puppet::SSL::CertificateRequest.new 'bar'
+        Puppet::SSL::Certificate.indirection.stubs(:find)
+        Puppet::SSL::CertificateRequest.indirection.stubs(:find)
+        Puppet::SSL::Certificate.indirection.stubs(:find).with('host1').returns(@cert)
+        Puppet::SSL::CertificateRequest.indirection.stubs(:find).with('host2').returns(@csr)
+      end
 
-        @ca.expects(:fingerprint).with("host1", :digest).returns "fingerprint1"
+      it "should fingerprint with the set digest algorithm" do
+        @applier = @class.new(:fingerprint, :to => %w{host1}, :digest => :shaonemillion)
+        @cert.expects(:digest).with(:shaonemillion).returns("fingerprint1")
+
         @applier.expects(:puts).with "host1 fingerprint1"
 
         @applier.apply(@ca)
@@ -347,10 +365,10 @@ describe Puppet::SSL::CertificateAuthority::Interface do
 
           @applier = @class.new(:fingerprint, :to => :all)
 
-          @ca.expects(:fingerprint).with("host1", :SHA256).returns "fingerprint1"
+          @cert.expects(:digest).returns("fingerprint1")
           @applier.expects(:puts).with "host1 fingerprint1"
 
-          @ca.expects(:fingerprint).with("host2", :SHA256).returns "fingerprint2"
+          @csr.expects(:digest).returns("fingerprint2")
           @applier.expects(:puts).with "host2 fingerprint2"
 
           @applier.apply(@ca)
@@ -361,10 +379,10 @@ describe Puppet::SSL::CertificateAuthority::Interface do
         it "should print each named certificate if found" do
           @applier = @class.new(:fingerprint, :to => %w{host1 host2})
 
-          @ca.expects(:fingerprint).with("host1", :SHA256).returns "fingerprint1"
+          @cert.expects(:digest).returns("fingerprint1")
           @applier.expects(:puts).with "host1 fingerprint1"
 
-          @ca.expects(:fingerprint).with("host2", :SHA256).returns "fingerprint2"
+          @csr.expects(:digest).returns("fingerprint2")
           @applier.expects(:puts).with "host2 fingerprint2"
 
           @applier.apply(@ca)

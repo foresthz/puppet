@@ -70,7 +70,7 @@ class TypeDoc
     }.each do |name|
       type = @types[name]
       s = type.doc.gsub(/\s+/, " ")
-      n = s.index(".")
+      n = s.index(". ")
       if n.nil?
         s = ".. no documentation .."
       elsif n > 45
@@ -179,7 +179,7 @@ class Puppet::Application::Describe < Puppet::Application
   option("--meta","-m")
 
   def help
-    <<-HELP
+    <<-'HELP'
 
 puppet-describe(8) -- Display help about resource types
 ========

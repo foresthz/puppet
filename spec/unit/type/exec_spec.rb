@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 describe Puppet::Type.type(:exec) do
@@ -8,6 +8,8 @@ describe Puppet::Type.type(:exec) do
     Puppet.features.stubs(:root?).returns(true)
 
     output = rest.delete(:output) || ''
+
+    output = Puppet::Util::Execution::ProcessOutput.new(output, exitstatus)
     tries  = rest[:tries] || 1
 
     args = {
@@ -21,14 +23,12 @@ describe Puppet::Type.type(:exec) do
     exec = Puppet::Type.type(:exec).new(args)
 
     status = stub "process", :exitstatus => exitstatus
-    Puppet::Util::SUIDManager.expects(:run_and_capture).times(tries).
+    Puppet::Util::Execution.expects(:execute).times(tries).
       with() { |*args|
         args[0] == command &&
-        args[1] == nil &&
-        args[2] == nil &&
-        args[3][:override_locale] == false &&
-        args[3].has_key?(:custom_environment)
-      } .returns([output, status])
+        args[1][:override_locale] == false &&
+        args[1].has_key?(:custom_environment)
+      }.returns(output)
 
     return exec
   end
@@ -42,8 +42,9 @@ describe Puppet::Type.type(:exec) do
   describe "when not stubbing the provider" do
     before do
       path = tmpdir('path')
-      true_cmd = File.join(path, 'true')
-      false_cmd = File.join(path, 'false')
+      ext = Puppet.features.microsoft_windows? ? '.exe' : ''
+      true_cmd = File.join(path, "true#{ext}")
+      false_cmd = File.join(path, "false#{ext}")
 
       FileUtils.touch(true_cmd)
       FileUtils.touch(false_cmd)
@@ -56,26 +57,26 @@ describe Puppet::Type.type(:exec) do
 
     it "should return :executed_command as its event" do
       resource = Puppet::Type.type(:exec).new :command => @command
-      resource.parameter(:returns).event.name.should == :executed_command
+      expect(resource.parameter(:returns).event.name).to eq(:executed_command)
     end
 
     describe "when execing" do
-      it "should use the 'run_and_capture' method to exec" do
-        exec_tester("true").refresh.should == :executed_command
+      it "should use the 'execute' method to exec" do
+        expect(exec_tester("true").refresh).to eq(:executed_command)
       end
 
       it "should report a failure" do
-        proc { exec_tester('false', 1).refresh }.
-          should raise_error(Puppet::Error, /^false returned 1 instead of/)
+        expect { exec_tester('false', 1).refresh }.
+          to raise_error(Puppet::Error, /^false returned 1 instead of/)
       end
 
       it "should not report a failure if the exit status is specified in a returns array" do
-        proc { exec_tester("false", 1, :returns => [0, 1]).refresh }.should_not raise_error
+        expect { exec_tester("false", 1, :returns => [0, 1]).refresh }.to_not raise_error
       end
 
       it "should report a failure if the exit status is not specified in a returns array" do
-        proc { exec_tester('false', 1, :returns => [0, 100]).refresh }.
-          should raise_error(Puppet::Error, /^false returned 1 instead of/)
+        expect { exec_tester('false', 1, :returns => [0, 100]).refresh }.
+          to raise_error(Puppet::Error, /^false returned 1 instead of/)
       end
 
       it "should log the output on success" do
@@ -83,20 +84,20 @@ describe Puppet::Type.type(:exec) do
         exec_tester('false', 0, :output => output, :logoutput => true).refresh
         output.split("\n").each do |line|
           log = @logs.shift
-          log.level.should == :err
-          log.message.should == line
+          expect(log.level).to eq(:err)
+          expect(log.message).to eq(line)
         end
       end
 
       it "should log the output on failure" do
         output = "output1\noutput2\n"
-        proc { exec_tester('false', 1, :output => output, :logoutput => true).refresh }.
-          should raise_error(Puppet::Error)
+        expect { exec_tester('false', 1, :output => output, :logoutput => true).refresh }.
+          to raise_error(Puppet::Error)
 
         output.split("\n").each do |line|
           log = @logs.shift
-          log.level.should == :err
-          log.message.should == line
+          expect(log.level).to eq(:err)
+          expect(log.message).to eq(line)
         end
       end
     end
@@ -104,47 +105,47 @@ describe Puppet::Type.type(:exec) do
     describe "when logoutput=>on_failure is set" do
       it "should log the output on failure" do
         output = "output1\noutput2\n"
-        proc { exec_tester('false', 1, :output => output, :logoutput => :on_failure).refresh }.
-          should raise_error(Puppet::Error, /^false returned 1 instead of/)
+        expect { exec_tester('false', 1, :output => output, :logoutput => :on_failure).refresh }.
+          to raise_error(Puppet::Error, /^false returned 1 instead of/)
 
         output.split("\n").each do |line|
           log = @logs.shift
-          log.level.should == :err
-          log.message.should == line
+          expect(log.level).to eq(:err)
+          expect(log.message).to eq(line)
         end
       end
 
       it "should log the output on failure when returns is specified as an array" do
         output = "output1\noutput2\n"
 
-        proc {
+        expect {
           exec_tester('false', 1, :output => output, :returns => [0, 100],
                :logoutput => :on_failure).refresh
-        }.should raise_error(Puppet::Error, /^false returned 1 instead of/)
+        }.to raise_error(Puppet::Error, /^false returned 1 instead of/)
 
         output.split("\n").each do |line|
           log = @logs.shift
-          log.level.should == :err
-          log.message.should == line
+          expect(log.level).to eq(:err)
+          expect(log.message).to eq(line)
         end
       end
 
       it "shouldn't log the output on success" do
         exec_tester('true', 0, :output => "a\nb\nc\n", :logoutput => :on_failure).refresh
-        @logs.should == []
+        expect(@logs).to eq([])
       end
     end
 
     it "shouldn't log the output on success when non-zero exit status is in a returns array" do
       exec_tester("true", 100, :output => "a\n", :logoutput => :on_failure, :returns => [1, 100]).refresh
-      @logs.should == []
+      expect(@logs).to eq([])
     end
 
     describe " when multiple tries are set," do
       it "should repeat the command attempt 'tries' times on failure and produce an error" do
         tries = 5
         resource = exec_tester("false", 1, :tries => tries, :try_sleep => 0)
-        proc { resource.refresh }.should raise_error(Puppet::Error)
+        expect { resource.refresh }.to raise_error(Puppet::Error)
       end
     end
   end
@@ -153,11 +154,13 @@ describe Puppet::Type.type(:exec) do
     foo = make_absolute('/bin/foo')
     catalog = Puppet::Resource::Catalog.new
     tmp = Puppet::Type.type(:file).new(:name => foo)
-    catalog.add_resource tmp
     execer = Puppet::Type.type(:exec).new(:name => foo)
-    catalog.add_resource execer
 
-    catalog.relationship_graph.dependencies(execer).should == [tmp]
+    catalog.add_resource tmp
+    catalog.add_resource execer
+    dependencies = execer.autorequire(catalog)
+
+    expect(dependencies.collect(&:to_s)).to eq([Puppet::Relationship.new(tmp, execer).to_s])
   end
 
   describe "when handling the path parameter" do
@@ -168,7 +171,7 @@ describe Puppet::Type.type(:exec) do
     }.each do |test, input|
       it "should accept #{test}" do
         type = Puppet::Type.type(:exec).new(:name => @command, :path => input)
-        type[:path].should == expect
+        expect(type[:path]).to eq(expect)
       end
     end
 
@@ -187,36 +190,47 @@ describe Puppet::Type.type(:exec) do
 
       it "should use the path separator of the current platform" do
         type = Puppet::Type.type(:exec).new(:name => @command, :path => "fooqbarqbaz")
-        type[:path].should == %w[foo bar baz]
+        expect(type[:path]).to eq(%w[foo bar baz])
       end
     end
   end
 
   describe "when setting user" do
-    describe "on POSIX systems", :as_platform => :posix do
+    describe "on POSIX systems", :if => Puppet.features.posix? do
       it "should fail if we are not root" do
         Puppet.features.stubs(:root?).returns(false)
-        expect { Puppet::Type.type(:exec).new(:name => '/bin/true whatever', :user => 'input') }.
-          should raise_error Puppet::Error, /Parameter user failed/
+        expect {
+          Puppet::Type.type(:exec).new(:name => '/bin/true whatever', :user => 'input')
+        }.to raise_error Puppet::Error, /Parameter user failed/
+      end
+
+      it "accepts the current user" do
+        Puppet.features.stubs(:root?).returns(false)
+        Etc.stubs(:getpwuid).returns(Struct::Passwd.new('input'))
+
+        type = Puppet::Type.type(:exec).new(:name => '/bin/true whatever', :user => 'input')
+
+        expect(type[:user]).to eq('input')
       end
 
       ['one', 2, 'root', 4294967295, 4294967296].each do |value|
         it "should accept '#{value}' as user if we are root" do
           Puppet.features.stubs(:root?).returns(true)
           type = Puppet::Type.type(:exec).new(:name => '/bin/true whatever', :user => value)
-          type[:user].should == value
+          expect(type[:user]).to eq(value)
         end
       end
     end
 
-    describe "on Windows systems", :as_platform => :windows do
+    describe "on Windows systems", :if => Puppet.features.microsoft_windows? do
       before :each do
         Puppet.features.stubs(:root?).returns(true)
       end
 
       it "should reject user parameter" do
-        expect { Puppet::Type.type(:exec).new(:name => 'c:\windows\notepad.exe', :user => 'input') }.
-          should raise_error Puppet::Error, /Unable to execute commands as other users on Windows/
+        expect {
+          Puppet::Type.type(:exec).new(:name => 'c:\windows\notepad.exe', :user => 'input')
+        }.to raise_error Puppet::Error, /Unable to execute commands as other users on Windows/
       end
     end
   end
@@ -226,7 +240,7 @@ describe Puppet::Type.type(:exec) do
       ['one', 2, 'wheel', 4294967295, 4294967296].each do |value|
         it "should accept '#{value}' without error or judgement" do
           type = Puppet::Type.type(:exec).new(:name => @command, :group => value)
-          type[:group].should == value
+          expect(type[:group]).to eq(value)
         end
       end
     end
@@ -273,12 +287,12 @@ describe Puppet::Type.type(:exec) do
         end
 
         it "should work if the provider calls the command valid" do
-          expect { test(command, true) }.should_not raise_error
+          expect { test(command, true) }.to_not raise_error
         end
 
         it "should fail if the provider calls the command invalid" do
           expect { test(command, false) }.
-            should raise_error Puppet::Error, /Parameter #{@param} failed: from a stub/
+            to raise_error Puppet::Error, /Parameter #{@param} failed on Exec\[.*\]: from a stub/
         end
       end
     end
@@ -294,7 +308,7 @@ describe Puppet::Type.type(:exec) do
         input = %w{one two three}
         @test.provider.expects(:validatecmd).times(input.length).returns(true)
         @test[param] = input
-        @test[param].should == input
+        expect(@test[param]).to eq(input)
       end
 
       it "should reject the array when any commands return invalid" do
@@ -304,15 +318,26 @@ describe Puppet::Type.type(:exec) do
           @test.provider.expects(:validatecmd).with(cmd).returns(true)
         end
         @test[param] = input
-        @test[param].should == input
+        expect(@test[param]).to eq(input)
       end
 
       it "should reject the array when all commands return invalid" do
         input = %w{one two three}
         @test.provider.expects(:validatecmd).times(input.length).returns(false)
         @test[param] = input
-        @test[param].should == input
+        expect(@test[param]).to eq(input)
       end
+    end
+  end
+
+  describe "when setting command" do
+    subject { described_class.new(:name => @command) }
+    it "fails when passed an Array" do
+      expect { subject[:command] = [] }.to raise_error Puppet::Error, /Command must be a String/
+    end
+
+    it "fails when passed a Hash" do
+      expect { subject[:command] = {} }.to raise_error Puppet::Error, /Command must be a String/
     end
   end
 
@@ -331,7 +356,7 @@ describe Puppet::Type.type(:exec) do
       }.each do |name, data|
         it "should accept #{name}" do
           @exec[:environment] = data
-          @exec[:environment].should == data
+          expect(@exec[:environment]).to eq(data)
         end
       end
 
@@ -341,7 +366,7 @@ describe Puppet::Type.type(:exec) do
       }.each do |name, data|
         it "should reject #{name} without assignment" do
           expect { @exec[:environment] = data }.
-            should raise_error Puppet::Error, /Invalid environment setting/
+            to raise_error Puppet::Error, /Invalid environment setting/
         end
       end
     end
@@ -350,24 +375,24 @@ describe Puppet::Type.type(:exec) do
       [0, 0.1, 1, 10, 4294967295].each do |valid|
         it "should accept '#{valid}' as valid" do
           @exec[:timeout] = valid
-          @exec[:timeout].should == valid
+          expect(@exec[:timeout]).to eq(valid)
         end
 
         it "should accept '#{valid}' in an array as valid" do
           @exec[:timeout] = [valid]
-          @exec[:timeout].should == valid
+          expect(@exec[:timeout]).to eq(valid)
         end
       end
 
       ['1/2', '', 'foo', '5foo'].each do |invalid|
         it "should reject '#{invalid}' as invalid" do
           expect { @exec[:timeout] = invalid }.
-            should raise_error Puppet::Error, /The timeout must be a number/
+            to raise_error Puppet::Error, /The timeout must be a number/
         end
 
         it "should reject '#{invalid}' in an array as invalid" do
           expect { @exec[:timeout] = [invalid] }.
-            should raise_error Puppet::Error, /The timeout must be a number/
+            to raise_error Puppet::Error, /The timeout must be a number/
         end
       end
 
@@ -380,21 +405,21 @@ describe Puppet::Type.type(:exec) do
         #sleep_exec = Puppet::Type.type(:exec).new(:name => 'exec_spec sleep command', :command => "#{ruby_path} -e 'sleep 0.02'", :timeout => '0.01')
         sleep_exec = Puppet::Type.type(:exec).new(:name => "#{ruby_path} -e 'sleep 0.02'", :timeout => '0.01')
 
-        lambda { sleep_exec.refresh }.should raise_error Puppet::Error, "Command exceeded timeout"
+        expect { sleep_exec.refresh }.to raise_error Puppet::Error, "Command exceeded timeout"
       end
 
       it "should convert timeout to a float" do
         command = make_absolute('/bin/false')
         resource = Puppet::Type.type(:exec).new :command => command, :timeout => "12"
-        resource[:timeout].should be_a(Float)
-        resource[:timeout].should == 12.0
+        expect(resource[:timeout]).to be_a(Float)
+        expect(resource[:timeout]).to eq(12.0)
       end
 
       it "should munge negative timeouts to 0.0" do
         command = make_absolute('/bin/false')
         resource = Puppet::Type.type(:exec).new :command => command, :timeout => "-12.0"
-        resource.parameter(:timeout).value.should be_a(Float)
-        resource.parameter(:timeout).value.should == 0.0
+        expect(resource.parameter(:timeout).value).to be_a(Float)
+        expect(resource.parameter(:timeout).value).to eq(0.0)
       end
     end
 
@@ -402,14 +427,14 @@ describe Puppet::Type.type(:exec) do
       [1, 10, 4294967295].each do |valid|
         it "should accept '#{valid}' as valid" do
           @exec[:tries] = valid
-          @exec[:tries].should == valid
+          expect(@exec[:tries]).to eq(valid)
         end
 
         if "REVISIT: too much test log spam" == "a good thing" then
           it "should accept '#{valid}' in an array as valid" do
             pending "inconsistent, but this is not supporting arrays, unlike timeout"
             @exec[:tries] = [valid]
-            @exec[:tries].should == valid
+            expect(@exec[:tries]).to eq(valid)
           end
         end
       end
@@ -417,14 +442,14 @@ describe Puppet::Type.type(:exec) do
       [-3.5, -1, 0, 0.2, '1/2', '1_000_000', '+12', '', 'foo'].each do |invalid|
         it "should reject '#{invalid}' as invalid" do
           expect { @exec[:tries] = invalid }.
-            should raise_error Puppet::Error, /Tries must be an integer/
+            to raise_error Puppet::Error, /Tries must be an integer/
         end
 
         if "REVISIT: too much test log spam" == "a good thing" then
           it "should reject '#{invalid}' in an array as invalid" do
             pending "inconsistent, but this is not supporting arrays, unlike timeout"
             expect { @exec[:tries] = [invalid] }.
-              should raise_error Puppet::Error, /Tries must be an integer/
+              to raise_error Puppet::Error, /Tries must be an integer/
           end
         end
       end
@@ -434,14 +459,14 @@ describe Puppet::Type.type(:exec) do
       [0, 0.2, 1, 10, 4294967295].each do |valid|
         it "should accept '#{valid}' as valid" do
           @exec[:try_sleep] = valid
-          @exec[:try_sleep].should == valid
+          expect(@exec[:try_sleep]).to eq(valid)
         end
 
         if "REVISIT: too much test log spam" == "a good thing" then
           it "should accept '#{valid}' in an array as valid" do
             pending "inconsistent, but this is not supporting arrays, unlike timeout"
             @exec[:try_sleep] = [valid]
-            @exec[:try_sleep].should == valid
+            expect(@exec[:try_sleep]).to eq(valid)
           end
         end
       end
@@ -456,14 +481,14 @@ describe Puppet::Type.type(:exec) do
       }.each do |invalid, error|
         it "should reject '#{invalid}' as invalid" do
           expect { @exec[:try_sleep] = invalid }.
-            should raise_error Puppet::Error, /try_sleep #{error}/
+            to raise_error Puppet::Error, /try_sleep #{error}/
         end
 
         if "REVISIT: too much test log spam" == "a good thing" then
           it "should reject '#{invalid}' in an array as invalid" do
             pending "inconsistent, but this is not supporting arrays, unlike timeout"
             expect { @exec[:try_sleep] = [invalid] }.
-              should raise_error Puppet::Error, /try_sleep #{error}/
+              to raise_error Puppet::Error, /try_sleep #{error}/
           end
         end
       end
@@ -473,14 +498,14 @@ describe Puppet::Type.type(:exec) do
       [:true, :false].each do |value|
         it "should accept '#{value}'" do
           @exec[:refreshonly] = value
-          @exec[:refreshonly].should == value
+          expect(@exec[:refreshonly]).to eq(value)
         end
       end
 
       [1, 0, "1", "0", "yes", "y", "no", "n"].each do |value|
         it "should reject '#{value}'" do
           expect { @exec[:refreshonly] = value }.
-            should raise_error(Puppet::Error,
+            to raise_error(Puppet::Error,
               /Invalid value #{value.inspect}\. Valid values are true, false/
             )
         end
@@ -516,7 +541,7 @@ describe Puppet::Type.type(:exec) do
       { :true => false, :false => true }.each do |input, result|
         it "should return '#{result}' when given '#{input}'" do
           @test[:refreshonly] = input
-          @test.check_all_attributes.should == result
+          expect(@test.check_all_attributes).to eq(result)
         end
       end
     end
@@ -531,36 +556,36 @@ describe Puppet::Type.type(:exec) do
       context "with a single item" do
         it "should run when the item does not exist" do
           @test[:creates] = @unexist
-          @test.check_all_attributes.should == true
+          expect(@test.check_all_attributes).to eq(true)
         end
 
         it "should not run when the item exists" do
           @test[:creates] = @exist
-          @test.check_all_attributes.should == false
+          expect(@test.check_all_attributes).to eq(false)
         end
       end
 
       context "with an array with one item" do
         it "should run when the item does not exist" do
           @test[:creates] = [@unexist]
-          @test.check_all_attributes.should == true
+          expect(@test.check_all_attributes).to eq(true)
         end
 
         it "should not run when the item exists" do
           @test[:creates] = [@exist]
-          @test.check_all_attributes.should == false
+          expect(@test.check_all_attributes).to eq(false)
         end
       end
 
       context "with an array with multiple items" do
         it "should run when all items do not exist" do
           @test[:creates] = [@unexist] * 3
-          @test.check_all_attributes.should == true
+          expect(@test.check_all_attributes).to eq(true)
         end
 
         it "should not run when one item exists" do
           @test[:creates] = [@unexist, @exist, @unexist]
-          @test.check_all_attributes.should == false
+          expect(@test.check_all_attributes).to eq(false)
         end
 
         it "should not run when all items exist" do
@@ -592,49 +617,49 @@ describe Puppet::Type.type(:exec) do
         context "with a single item" do
           it "should run if the command exits non-zero" do
             @test[param] = @fail
-            @test.check_all_attributes.should == true
+            expect(@test.check_all_attributes).to eq(true)
           end
 
           it "should not run if the command exits zero" do
             @test[param] = @pass
-            @test.check_all_attributes.should == false
+            expect(@test.check_all_attributes).to eq(false)
           end
         end
 
         context "with an array with a single item" do
           it "should run if the command exits non-zero" do
             @test[param] = [@fail]
-            @test.check_all_attributes.should == true
+            expect(@test.check_all_attributes).to eq(true)
           end
 
           it "should not run if the command exits zero" do
             @test[param] = [@pass]
-            @test.check_all_attributes.should == false
+            expect(@test.check_all_attributes).to eq(false)
           end
         end
 
         context "with an array with multiple items" do
           it "should run if all the commands exits non-zero" do
             @test[param] = [@fail] * 3
-            @test.check_all_attributes.should == true
+            expect(@test.check_all_attributes).to eq(true)
           end
 
           it "should not run if one command exits zero" do
             @test[param] = [@pass, @fail, @pass]
-            @test.check_all_attributes.should == false
+            expect(@test.check_all_attributes).to eq(false)
           end
 
           it "should not run if all command exits zero" do
             @test[param] = [@pass] * 3
-            @test.check_all_attributes.should == false
+            expect(@test.check_all_attributes).to eq(false)
           end
         end
 
         it "should emit output to debug" do
           Puppet::Util::Log.level = :debug
           @test[param] = @fail
-          @test.check_all_attributes.should == true
-          @logs.shift.message.should == "test output"
+          expect(@test.check_all_attributes).to eq(true)
+          expect(@logs.shift.message).to eq("test output")
         end
       end
     end
@@ -647,18 +672,18 @@ describe Puppet::Type.type(:exec) do
 
     it "should return :notrun when check_all_attributes returns true" do
       @exec_resource.stubs(:check_all_attributes).returns true
-      @exec_resource.retrieve[:returns].should == :notrun
+      expect(@exec_resource.retrieve[:returns]).to eq(:notrun)
     end
 
     it "should return default exit code 0 when check_all_attributes returns false" do
       @exec_resource.stubs(:check_all_attributes).returns false
-      @exec_resource.retrieve[:returns].should == ['0']
+      expect(@exec_resource.retrieve[:returns]).to eq(['0'])
     end
 
     it "should return the specified exit code when check_all_attributes returns false" do
       @exec_resource.stubs(:check_all_attributes).returns false
       @exec_resource[:returns] = 42
-      @exec_resource.retrieve[:returns].should == ["42"]
+      expect(@exec_resource.retrieve[:returns]).to eq(["42"])
     end
   end
 
@@ -675,7 +700,7 @@ describe Puppet::Type.type(:exec) do
       @exec_resource.stubs(:provider).returns(provider)
 
       @exec_resource.refresh
-      @exec_resource.output.should == 'silly output'
+      expect(@exec_resource.output).to eq('silly output')
     end
   end
 
@@ -726,15 +751,22 @@ describe Puppet::Type.type(:exec) do
     end
 
     it "should accept a relative command with a path" do
-      type.new(:command => rel, :path => path).should be
+      expect(type.new(:command => rel, :path => path)).to be
     end
 
     it "should accept an absolute command with no path" do
-      type.new(:command => abs).should be
+      expect(type.new(:command => abs)).to be
     end
 
     it "should accept an absolute command with a path" do
-      type.new(:command => abs, :path => path).should be
+      expect(type.new(:command => abs, :path => path)).to be
+    end
+  end
+  describe "when providing a umask" do
+    it "should fail if an invalid umask is used" do
+      resource = Puppet::Type.type(:exec).new :command => @command
+      expect { resource[:umask] = '0028'}.to raise_error(Puppet::ResourceError, /umask specification is invalid/)
+      expect { resource[:umask] = '28' }.to raise_error(Puppet::ResourceError, /umask specification is invalid/)
     end
   end
 end

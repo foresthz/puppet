@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/util/json_lockfile'
@@ -17,13 +17,34 @@ describe Puppet::Util::JsonLockfile do
       data = { "foo" => "foofoo", "bar" => "barbar" }
       @lock.lock(data)
 
-      PSON.parse(File.read(@lockfile)).should == data
+      expect(PSON.parse(File.read(@lockfile))).to eq(data)
     end
   end
 
-  it "should return the lock data" do
-    data = { "foo" => "foofoo", "bar" => "barbar" }
-    @lock.lock(data)
-    @lock.lock_data.should == data
+  describe "reading lock data" do
+    it "returns deserialized JSON from the lockfile" do
+      data = { "foo" => "foofoo", "bar" => "barbar" }
+      @lock.lock(data)
+      expect(@lock.lock_data).to eq data
+    end
+
+    it "returns nil if the file read returned nil" do
+      @lock.lock
+      File.stubs(:read).returns nil
+      expect(@lock.lock_data).to be_nil
+    end
+
+    it "returns nil if the file was empty" do
+      @lock.lock
+      File.stubs(:read).returns ''
+      expect(@lock.lock_data).to be_nil
+    end
+
+    it "returns nil if the file was not in PSON" do
+      @lock.lock
+      File.stubs(:read).returns ']['
+      expect(@lock.lock_data).to be_nil
+    end
+
   end
 end

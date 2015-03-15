@@ -1,24 +1,23 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/indirector/key/ca'
 
 describe Puppet::SSL::Key::Ca do
   it "should have documentation" do
-    Puppet::SSL::Key::Ca.doc.should be_instance_of(String)
+    expect(Puppet::SSL::Key::Ca.doc).to be_instance_of(String)
   end
 
   it "should use the :privatekeydir as the collection directory" do
-    Puppet.settings.expects(:value).with(:privatekeydir).returns "/key/dir"
-    Puppet::SSL::Key::Ca.collection_directory.should == "/key/dir"
+    Puppet[:privatekeydir] = "/key/dir"
+    expect(Puppet::SSL::Key::Ca.collection_directory).to eq(Puppet[:privatekeydir])
   end
 
   it "should store the ca key at the :cakey location" do
     Puppet.settings.stubs(:use)
-    Puppet.settings.stubs(:value).returns "whatever"
-    Puppet.settings.stubs(:value).with(:cakey).returns "/ca/key"
+    Puppet[:cakey] = "/ca/key"
     file = Puppet::SSL::Key::Ca.new
     file.stubs(:ca?).returns true
-    file.path("whatever").should == "/ca/key"
+    expect(file.path("whatever")).to eq(Puppet[:cakey])
   end
 end

@@ -1,5 +1,5 @@
+require 'spec_helper'
 require 'puppet/interface'
-require 'puppet/interface/option'
 
 describe Puppet::Interface::Option do
   let :face do Puppet::Interface.new(:option_testing, '0.0.1') end
@@ -10,75 +10,79 @@ describe Puppet::Interface::Option do
         input = base + postfix
         it "should map #{input.inspect} to #{expect.inspect}" do
           option = Puppet::Interface::Option.new(face, input)
-          option.name.should == expect
+          expect(option.name).to eq(expect)
         end
       end
     end
 
     [:foo, 12, nil, {}, []].each do |input|
       it "should fail sensible when given #{input.inspect}" do
-        expect { Puppet::Interface::Option.new(face, input) }.
-          should raise_error ArgumentError, /is not valid for an option argument/
+        expect {
+          Puppet::Interface::Option.new(face, input)
+        }.to raise_error ArgumentError, /is not valid for an option argument/
       end
     end
 
     ["-foo", "-foo=BAR", "-foo BAR"].each do |input|
       it "should fail with a single dash for long option #{input.inspect}" do
-        expect { Puppet::Interface::Option.new(face, input) }.
-          should raise_error ArgumentError, /long options need two dashes \(--\)/
+        expect {
+          Puppet::Interface::Option.new(face, input)
+        }.to raise_error ArgumentError, /long options need two dashes \(--\)/
       end
     end
   end
 
   it "requires a face when created" do
-    expect { Puppet::Interface::Option.new }.
-      should raise_error ArgumentError, /wrong number of arguments/
+    expect {
+      Puppet::Interface::Option.new
+    }.to raise_error ArgumentError, /wrong number of arguments/
   end
 
   it "also requires some declaration arguments when created" do
-    expect { Puppet::Interface::Option.new(face) }.
-      should raise_error ArgumentError, /No option declarations found/
+    expect {
+      Puppet::Interface::Option.new(face)
+    }.to raise_error ArgumentError, /No option declarations found/
   end
 
   it "should infer the name from an optparse string" do
     option = Puppet::Interface::Option.new(face, "--foo")
-    option.name.should == :foo
+    expect(option.name).to eq(:foo)
   end
 
   it "should infer the name when multiple optparse string are given" do
     option = Puppet::Interface::Option.new(face, "--foo", "-f")
-    option.name.should == :foo
+    expect(option.name).to eq(:foo)
   end
 
   it "should prefer the first long option name over a short option name" do
     option = Puppet::Interface::Option.new(face, "-f", "--foo")
-    option.name.should == :foo
+    expect(option.name).to eq(:foo)
   end
 
   it "should create an instance when given a face and name" do
-    Puppet::Interface::Option.new(face, "--foo").
-      should be_instance_of Puppet::Interface::Option
+    expect(Puppet::Interface::Option.new(face, "--foo")).
+      to be_instance_of Puppet::Interface::Option
   end
-  
+
   Puppet.settings.each do |name, value|
     it "should fail when option #{name.inspect} already exists in puppet core" do
       expect do
         Puppet::Interface::Option.new(face, "--#{name}")
-      end.should raise_error ArgumentError, /already defined/
+      end.to raise_error ArgumentError, /already defined/
     end
   end
 
   describe "#to_s" do
     it "should transform a symbol into a string" do
       option = Puppet::Interface::Option.new(face, "--foo")
-      option.name.should == :foo
-      option.to_s.should == "foo"
+      expect(option.name).to eq(:foo)
+      expect(option.to_s).to eq("foo")
     end
 
     it "should use - rather than _ to separate words in strings but not symbols" do
       option = Puppet::Interface::Option.new(face, "--foo-bar")
-      option.name.should == :foo_bar
-      option.to_s.should == "foo-bar"
+      expect(option.name).to eq(:foo_bar)
+      expect(option.to_s).to eq("foo-bar")
     end
   end
 
@@ -87,13 +91,13 @@ describe Puppet::Interface::Option do
       subject { Puppet::Interface::Option.new(face, "--foo") }
       let :proc do Proc.new do :from_proc end end
 
-      it { should respond_to "#{side}_action" }
-      it { should respond_to "#{side}_action=" }
+      it { is_expected.to respond_to "#{side}_action" }
+      it { is_expected.to respond_to "#{side}_action=" }
 
       it "should set the #{side}_action hook" do
-        subject.send("#{side}_action").should be_nil
+        expect(subject.send("#{side}_action")).to be_nil
         subject.send("#{side}_action=", proc)
-        subject.send("#{side}_action").should be_an_instance_of UnboundMethod
+        expect(subject.send("#{side}_action")).to be_an_instance_of UnboundMethod
       end
 
       data = [1, "foo", :foo, Object.new, method(:hash), method(:hash).unbind]
@@ -111,17 +115,17 @@ describe Puppet::Interface::Option do
 
     it "should work sanely if member variables are used for state" do
       subject.default = proc { @foo ||= 0; @foo += 1 }
-      subject.default.should == 1
-      subject.default.should == 2
-      subject.default.should == 3
+      expect(subject.default).to eq(1)
+      expect(subject.default).to eq(2)
+      expect(subject.default).to eq(3)
     end
 
     context "with no default" do
-      it { should_not be_has_default }
+      it { is_expected.not_to be_has_default }
       its :default do should be_nil end
 
       it "should set a proc as default" do
-        expect { subject.default = proc { 12 } }.should_not raise_error
+        expect { subject.default = proc { 12 } }.to_not raise_error
       end
 
       [1, {}, [], Object.new, "foo"].each do |input|
@@ -134,18 +138,18 @@ describe Puppet::Interface::Option do
     context "with a default" do
       before :each do subject.default = proc { [:foo] } end
 
-      it { should be_has_default }
+      it { is_expected.to be_has_default }
       its :default do should == [:foo] end
 
       it "should invoke the block every time" do
-        subject.default.object_id.should_not == subject.default.object_id
-        subject.default.should == subject.default
+        expect(subject.default.object_id).not_to eq(subject.default.object_id)
+        expect(subject.default).to eq(subject.default)
       end
 
       it "should allow replacing the default proc" do
-        subject.default.should == [:foo]
+        expect(subject.default).to eq([:foo])
         subject.default = proc { :bar }
-        subject.default.should == :bar
+        expect(subject.default).to eq(:bar)
       end
     end
   end

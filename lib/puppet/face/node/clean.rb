@@ -1,27 +1,19 @@
 Puppet::Face.define(:node, '0.0.1') do
   action(:clean) do
-    option "--[no-]unexport" do
-      summary "Unexport exported resources"
-    end
 
-    summary "Clean up everything a puppetmaster knows about a node"
+    summary "Clean up signed certs, cached facts, node objects, and reports for a node stored by the puppetmaster"
     arguments "<host1> [<host2> ...]"
-    description <<-EOT
-      This includes
+    description <<-'EOT'
+      Cleans up the following information a puppet master knows about a node:
 
-       * Signed certificates ($vardir/ssl/ca/signed/node.domain.pem)
-       * Cached facts ($vardir/yaml/facts/node.domain.yaml)
-       * Cached node stuff ($vardir/yaml/node/node.domain.yaml)
-       * Reports ($vardir/reports/node.domain)
-       * Stored configs: it can either remove all data from an host in your
-       storedconfig database, or with --unexport turn every exported resource
-       supporting ensure to absent so that any other host checking out their
-       config can remove those exported configurations.
+      <Signed certificates> - ($vardir/ssl/ca/signed/node.domain.pem)
 
-      This will unexport exported resources of a
-      host, so that consumers of these resources can remove the exported
-      resources and we will safely remove the node from our
-      infrastructure.
+      <Cached facts> - ($vardir/yaml/facts/node.domain.yaml)
+
+      <Cached node objects> - ($vardir/yaml/node/node.domain.yaml)
+
+      <Reports> - ($vardir/reports/node.domain)
+
     EOT
 
     when_invoked do |*args|
@@ -29,13 +21,13 @@ Puppet::Face.define(:node, '0.0.1') do
       options = args.last
       raise "At least one node should be passed" if nodes.empty? || nodes == options
 
-
-
-      # This seems really bad; run_mode should be set as part of a class definition, and should
-      #  not be modifiable beyond that.  This is one of the only places left in the code that
-      #  tries to manipulate it.  I would like to get rid of it but I'm not entirely familiar
-      #  with what we are trying to do here, so I'm postponing for now... --cprice 2012-03-16
-      Puppet.settings.set_value(:run_mode, :master, :application_defaults)
+      # This seems really bad; run_mode should be set as part of a class
+      # definition, and should not be modifiable beyond that.  This is one of
+      # the only places left in the code that tries to manipulate it. Other
+      # parts of code that handle certificates behave differently if the
+      # run_mode is master. Those other behaviors are needed for cleaning the
+      # certificates correctly.
+      Puppet.settings.preferred_run_mode = "master"
 
       if Puppet::SSL::CertificateAuthority.ca?
         Puppet::SSL::Host.ca_location = :local
@@ -48,16 +40,15 @@ Puppet::Face.define(:node, '0.0.1') do
       Puppet::Node.indirection.terminus_class = :yaml
       Puppet::Node.indirection.cache_class = :yaml
 
-      nodes.each { |node| cleanup(node.downcase, options[:unexport]) }
+      nodes.each { |node| cleanup(node.downcase) }
     end
   end
 
-  def cleanup(node, unexport)
+  def cleanup(node)
     clean_cert(node)
     clean_cached_facts(node)
     clean_cached_node(node)
     clean_reports(node)
-    clean_storeconfigs(node, unexport)
   end
 
   # clean signed cert for +host+
@@ -89,64 +80,15 @@ Puppet::Face.define(:node, '0.0.1') do
     Puppet.info "#{node}'s reports removed"
   end
 
-  # clean storeconfig for +node+
-  def clean_storeconfigs(node, do_unexport=false)
-    return unless Puppet[:storeconfigs] && Puppet.features.rails?
-    require 'puppet/rails'
-    Puppet::Rails.connect
-    unless rails_node = Puppet::Rails::Host.find_by_name(node)
-      Puppet.notice "No entries found for #{node} in storedconfigs."
-      return
-    end
-
-    if do_unexport
-      unexport(rails_node)
-      Puppet.notice "Force #{node}'s exported resources to absent"
-      Puppet.warning "Please wait until all other hosts have checked out their configuration before finishing the cleanup with:"
-      Puppet.warning "$ puppet node clean #{node}"
-    else
-      rails_node.destroy
-      Puppet.notice "#{node} storeconfigs removed"
-    end
-  end
-
-  def unexport(node)
-    # fetch all exported resource
-    query = {:include => {:param_values => :param_name}}
-    query[:conditions] = [ "exported=? AND host_id=?", true, node.id ]
-    Puppet::Rails::Resource.find(:all, query).each do |resource|
-      if type_is_ensurable(resource)
-        line = 0
-        param_name = Puppet::Rails::ParamName.find_or_create_by_name("ensure")
-
-        if ensure_param = resource.param_values.find(
-          :first,
-          :conditions => [ 'param_name_id = ?', param_name.id ]
-        )
-          line = ensure_param.line.to_i
-          Puppet::Rails::ParamValue.delete(ensure_param.id);
-        end
-
-        # force ensure parameter to "absent"
-        resource.param_values.create(
-          :value => "absent",
-          :line => line,
-          :param_name => param_name
-        )
-        Puppet.info("#{resource.name} has been marked as \"absent\"")
-      end
-    end
-  end
-
   def environment
-    @environment ||= Puppet::Node::Environment.new
+    @environment ||= Puppet.lookup(:current_environment)
   end
 
   def type_is_ensurable(resource)
     if (type = Puppet::Type.type(resource.restype)) && type.validattr?(:ensure)
       return true
     else
-      type = environment.known_resource_types.find_definition('', resource.restype)
+      type = environment.known_resource_types.find_definition(resource.restype)
       return true if type && type.arguments.keys.include?('ensure')
     end
     return false

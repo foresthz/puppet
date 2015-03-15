@@ -1,10 +1,15 @@
 Puppet::Type.type(:package).provide :zypper, :parent => :rpm do
-  desc "Support for SuSE `zypper` package manager. Found in SLES10sp2+ and SLES11"
+  desc "Support for SuSE `zypper` package manager. Found in SLES10sp2+ and SLES11.
 
-  has_feature :versionable
+    This provider supports the `install_options` attribute, which allows command-line flags to be passed to zypper.
+    These options should be specified as a string (e.g. '--flag'), a hash (e.g. {'--flag' => 'value'}),
+    or an array where each element is either a string or a hash."
+
+  has_feature :versionable, :install_options, :virtual_packages
 
   commands :zypper => "/usr/bin/zypper"
 
+  defaultfor :operatingsystem => [:suse, :sles, :sled, :opensuse]
   confine    :operatingsystem => [:suse, :sles, :sled, :opensuse]
 
   #on zypper versions <1.0, the version option returns 1
@@ -23,7 +28,7 @@ Puppet::Type.type(:package).provide :zypper, :parent => :rpm do
     # XXX: We don't actually deal with epochs here.
     case should
     when true, false, Symbol
-      # pass
+      should = nil
     else
       # Add the package version
       wanted = "#{wanted}-#{should}"
@@ -41,20 +46,22 @@ Puppet::Type.type(:package).provide :zypper, :parent => :rpm do
     self.debug "Detected zypper version #{major}.#{minor}.#{patch}"
 
     #zypper version < 1.0 does not support --quiet flag
-    quiet = "--quiet"
     if major < 1
-      quiet = "--terse"
+      quiet = '--terse'
+    else
+      quiet = '--quiet'
     end
 
-    license = "--auto-agree-with-licenses"
-    noconfirm = "--no-confirm"
+    options = [quiet, :install]
 
     #zypper 0.6.13 (OpenSuSE 10.2) does not support auto agree with licenses
-    if major < 1 and minor <= 6 and patch <= 13
-      zypper quiet, :install, noconfirm, wanted
-    else
-      zypper quiet, :install, license, noconfirm, wanted
-    end
+    options << '--auto-agree-with-licenses' unless major < 1 and minor <= 6 and patch <= 13
+    options << '--no-confirm'
+    options << '--name' unless @resource.allow_virtual? || should
+    options += install_options if resource[:install_options]
+    options << wanted
+
+    zypper *options
 
     unless self.query
       raise Puppet::ExecutionFailure.new(

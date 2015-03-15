@@ -1,4 +1,4 @@
-#! /usr/bin/env ruby -S rspec
+#! /usr/bin/env ruby
 require 'spec_helper'
 
 require 'puppet/parameter/path'
@@ -9,7 +9,7 @@ require 'puppet/parameter/path'
       # The new type allows us a test that is guaranteed to go direct to our
       # validation code, without passing through any "real type" overrides or
       # whatever on the way.
-      Puppet::newtype(:test_puppet_parameter_path) do
+      Puppet::Type.newtype(:test_puppet_parameter_path) do
         newparam(:path, :parent => Puppet::Parameter::Path, :arrays => arrays) do
           isnamevar
           accept_arrays arrays
